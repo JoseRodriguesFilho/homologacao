@@ -204,8 +204,8 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
     _dwComboIndex = dwSelectedItem;
     _fCpfInvalidChars = false;
 
-    // 0 = UNIVESP (matrícula), 1 = demais instituições (CPF).
-    const bool univesp = (_dwComboIndex == 0);
+    // 0 = Escola de Governo (CPF), 1 = UNIVESP (matrícula).
+    const bool univesp = (_dwComboIndex == 1);
 
     CoTaskMemFree(_rgFieldStrings[SFI_EDIT_TEXT]);
     _rgFieldStrings[SFI_EDIT_TEXT] = nullptr;
@@ -218,7 +218,7 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
     if (_pCredProvCredentialEvents)
     {
         _pCredProvCredentialEvents->BeginFieldUpdates();
-        _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Instituição");
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Selecione sua instituição");
         _pCredProvCredentialEvents->SetFieldString(
             this, SFI_LOGONSTATUS_TEXT, univesp ? L"Matrícula" : L"CPF");
         _pCredProvCredentialEvents->SetFieldString(this, SFI_EDIT_TEXT, L"");
@@ -252,7 +252,7 @@ $fullNamePattern = '(?s)    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszUserName;.*? 
 $fullNameReplacement = @'
     if (SUCCEEDED(hr))
     {
-        hr = SHStrDupW(L"Instituição", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        hr = SHStrDupW(L"Selecione sua instituição", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
     }
 
 '@
@@ -383,7 +383,7 @@ $x =
         $qualifiedMatch.Length)
 
 # ---------------------------------------------------------------------------
-# Identificacao v11: dropdown Outros/UNIVESP + CPF ou matricula.
+# Identificacao v11: dropdown Escola de Governo/UNIVESP + CPF ou matricula.
 # ---------------------------------------------------------------------------
 $setStringPattern = '(?s)HRESULT CSampleCredential::SetStringValue\(DWORD dwFieldID, _In_ PCWSTR pwz\)\s*\{.*?\n\}\s*(?=// Returns whether a checkbox)'
 
@@ -400,7 +400,7 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
         const bool adminTarget =
             LabIsAccount(_pszQualifiedUserName, L"AdminEGOV");
         const bool univesp =
-            !adminTarget && _dwComboIndex == 0;
+            !adminTarget && _dwComboIndex == 1;
 
         wchar_t normalized[33] = {};
         size_t digitCount = 0;
@@ -489,7 +489,7 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
         if (_pCredProvCredentialEvents)
         {
             _pCredProvCredentialEvents->BeginFieldUpdates();
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Instituição");
+            _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Selecione sua instituição");
             _pCredProvCredentialEvents->SetFieldString(
                 this, SFI_LOGONSTATUS_TEXT, univesp ? L"Matrícula" : L"CPF");
 
@@ -618,7 +618,7 @@ $authBlock = @'
     }
 
     const bool univesp =
-        !adminTarget && _dwComboIndex == 0;
+        !adminTarget && _dwComboIndex == 1;
 
     wchar_t normalizedIdentifier[33] = {};
     size_t identifierCount = 0;
@@ -794,7 +794,7 @@ foreach ($needle in $requiredCredential) {
 $cpfInputChecks = @(
     @{
         Name = "dropdown usa selecao UNIVESP"
-        Pattern = '_dwComboIndex\s*==\s*0'
+        Pattern = '_dwComboIndex\s*==\s*1'
     },
     @{
         Name = "CPF continua normalizado localmente"
@@ -909,5 +909,5 @@ if (-not $checkSupport.Contains('CryptUnprotectData')) {
 Write-Host ""
 Write-Host "e-GOV Login v11-homolog preparado." -ForegroundColor Green
 Write-Host "Tiles: Aluno e-GOV / Admin e-GOV" -ForegroundColor Green
-Write-Host "v11 homolog fix3: dropdown Instituicao -> UNIVESP=matricula / Outras=CPF" -ForegroundColor Green
+Write-Host "v11 homolog fix3: dropdown -> Escola de Governo=CPF (padrao) / UNIVESP=matricula" -ForegroundColor Green
 Write-Host "Senha: DPAPI LocalMachine (nao embutida na DLL)" -ForegroundColor Green

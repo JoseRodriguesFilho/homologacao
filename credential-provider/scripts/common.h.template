@@ -10,7 +10,7 @@ enum SAMPLE_FIELD_ID
     SFI_SUBMIT_BUTTON     = 4,
     SFI_LAUNCHWINDOW_LINK = 5,
     SFI_HIDECONTROLS_LINK = 6,
-    SFI_FULLNAME_TEXT     = 7,   // "Instituição"
+    SFI_FULLNAME_TEXT     = 7,   // "Selecione sua instituição"
     SFI_COMBOBOX          = 8,   // seleção da instituição
     SFI_LOGONSTATUS_TEXT  = 9,   // rótulo dinâmico: CPF/Matrícula
     SFI_EDIT_TEXT         = 10,  // identificação
@@ -34,7 +34,7 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_SUBMIT_BUTTON
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LAUNCHWINDOW_LINK
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_HIDECONTROLS_LINK
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_FULLNAME_TEXT = Instituição
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_FULLNAME_TEXT = Selecione sua instituição
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_COMBOBOX
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_LOGONSTATUS_TEXT = CPF/Matrícula
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_FOCUSED }, // SFI_EDIT_TEXT
@@ -51,8 +51,8 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
     { SFI_SUBMIT_BUTTON,     CPFT_SUBMIT_BUTTON, L"Entrar"                                        },
     { SFI_LAUNCHWINDOW_LINK, CPFT_COMMAND_LINK,  L""                                              },
     { SFI_HIDECONTROLS_LINK, CPFT_COMMAND_LINK,  L""                                              },
-    { SFI_FULLNAME_TEXT,     CPFT_SMALL_TEXT,    L"Instituição"                                   },
-    { SFI_COMBOBOX,          CPFT_COMBOBOX,      L"Instituição"                                   },
+    { SFI_FULLNAME_TEXT,     CPFT_SMALL_TEXT,    L"Selecione sua instituição"                     },
+    { SFI_COMBOBOX,          CPFT_COMBOBOX,      L"Selecione sua instituição"                                   },
     { SFI_LOGONSTATUS_TEXT,  CPFT_SMALL_TEXT,    L"Matrícula"                                     },
     { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     L""                                              },
     { SFI_DISPLAYNAME_TEXT,  CPFT_SMALL_TEXT,    L""                                              },
@@ -61,6 +61,6 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
 
 static const PWSTR s_rgComboBoxStrings[] =
 {
+    L"Escola de Governo",
     L"UNIVESP",
-    L"Outras instituições",
 };

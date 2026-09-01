@@ -1,4 +1,4 @@
-#include <windows.h>
+﻿#include <windows.h>
 #include <winhttp.h>
 #include <wincrypt.h>
 #include <string>
@@ -701,12 +701,20 @@ namespace
         std::string institution = univesp ? "univesp" : "outros";
         std::string identifierType = univesp ? "matricula" : "cpf";
 
+        // Para CPF, envie também o campo legado "cpf". Assim a Escola de
+        // Governo continua funcionando contra a API v10 enquanto a v11 e
+        // implantada. A API v11 aceita os dois formatos.
+        std::string legacyCpf = univesp
+            ? ""
+            : ",\"cpf\":\"" + EscapeJson(cpfUtf8) + "\"";
+
         std::string body =
             "{\"identifier\":\"" +
             EscapeJson(cpfUtf8) +
             "\",\"identifier_type\":\"" + identifierType +
             "\",\"institution\":\"" + institution +
-            "\",\"computer\":\"" +
+            legacyCpf +
+            ",\"computer\":\"" +
             EscapeJson(computerUtf8) +
             "\",\"target\":\"" +
             target +
@@ -1040,8 +1048,12 @@ LAB_AUTH_RESULT LabAuthorizeIdentity(
     bool adminTarget,
     LAB_AUTH_RESPONSE* response)
 {
+    // Escola de Governo/CPF usa a rota legada para manter compatibilidade
+    // com a API v10. UNIVESP/matricula usa a rota generica da v11.
+    PCWSTR authPath = univesp ? L"/auth/login" : L"/auth/cpf";
+
     LAB_AUTH_RESULT result = PostJson(
-        L"/auth/login",
+        authPath,
         identifier,
         univesp,
         adminTarget,
