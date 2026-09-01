@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 #include "helpers.h"
 
 enum SAMPLE_FIELD_ID
@@ -10,12 +10,12 @@ enum SAMPLE_FIELD_ID
     SFI_SUBMIT_BUTTON     = 4,
     SFI_LAUNCHWINDOW_LINK = 5,
     SFI_HIDECONTROLS_LINK = 6,
-    SFI_FULLNAME_TEXT     = 7,
-    SFI_DISPLAYNAME_TEXT  = 8,
-    SFI_LOGONSTATUS_TEXT  = 9,
-    SFI_CHECKBOX          = 10,
-    SFI_EDIT_TEXT         = 11,
-    SFI_COMBOBOX          = 12,
+    SFI_FULLNAME_TEXT     = 7,   // "Instituição"
+    SFI_COMBOBOX          = 8,   // seleção da instituição
+    SFI_LOGONSTATUS_TEXT  = 9,   // rótulo dinâmico: CPF/Matrícula
+    SFI_EDIT_TEXT         = 10,  // identificação
+    SFI_DISPLAYNAME_TEXT  = 11,  // nome/status retornado pela API
+    SFI_CHECKBOX          = 12,
     SFI_NUM_FIELDS        = 13,
 };
 
@@ -34,12 +34,12 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_SUBMIT_BUTTON
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LAUNCHWINDOW_LINK
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_HIDECONTROLS_LINK
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_FULLNAME_TEXT
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_DISPLAYNAME_TEXT
-    { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LOGONSTATUS_TEXT
-    { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_CHECKBOX
-    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_FOCUSED }, // SFI_EDIT_TEXT
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_FULLNAME_TEXT = Instituição
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_COMBOBOX
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_LOGONSTATUS_TEXT = CPF/Matrícula
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_FOCUSED }, // SFI_EDIT_TEXT
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_DISPLAYNAME_TEXT
+    { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_CHECKBOX
 };
 
 static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[] =
@@ -51,16 +51,16 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
     { SFI_SUBMIT_BUTTON,     CPFT_SUBMIT_BUTTON, L"Entrar"                                        },
     { SFI_LAUNCHWINDOW_LINK, CPFT_COMMAND_LINK,  L""                                              },
     { SFI_HIDECONTROLS_LINK, CPFT_COMMAND_LINK,  L""                                              },
-    { SFI_FULLNAME_TEXT,     CPFT_SMALL_TEXT,    L""                                              },
-    { SFI_DISPLAYNAME_TEXT,  CPFT_SMALL_TEXT,    L"Identificacao"                                 },
-    { SFI_LOGONSTATUS_TEXT,  CPFT_SMALL_TEXT,    L""                                              },
+    { SFI_FULLNAME_TEXT,     CPFT_SMALL_TEXT,    L"Instituição"                                   },
+    { SFI_COMBOBOX,          CPFT_COMBOBOX,      L"Instituição"                                   },
+    { SFI_LOGONSTATUS_TEXT,  CPFT_SMALL_TEXT,    L"Matrícula"                                     },
+    { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     L""                                              },
+    { SFI_DISPLAYNAME_TEXT,  CPFT_SMALL_TEXT,    L""                                              },
     { SFI_CHECKBOX,          CPFT_CHECKBOX,      L""                                              },
-    { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     L"CPF / Matrícula"                                           },
-    { SFI_COMBOBOX,          CPFT_COMBOBOX,      L""                                              },
 };
 
 static const PWSTR s_rgComboBoxStrings[] =
 {
-    L"Outros - CPF",
-    L"UNIVESP - Matrícula",
+    L"UNIVESP",
+    L"Outras instituições",
 };

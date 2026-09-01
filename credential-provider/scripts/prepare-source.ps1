@@ -187,13 +187,72 @@ if ($x2 -eq $x) {
 
 $x = $x2
 
+# Ao trocar a instituicao, limpa a identificacao anterior e atualiza
+# imediatamente o rotulo CPF/Matrícula.
+$setComboPattern = '(?s)HRESULT CSampleCredential::SetComboBoxSelectedValue\(DWORD dwFieldID, DWORD dwSelectedItem\)\s*\{.*?\n\}\s*(?=// Called when the user clicks a command link)'
+
+$newSetCombo = @'
+HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSelectedItem)
+{
+    if (dwFieldID >= ARRAYSIZE(_rgCredProvFieldDescriptors) ||
+        CPFT_COMBOBOX != _rgCredProvFieldDescriptors[dwFieldID].cpft ||
+        dwSelectedItem >= ARRAYSIZE(s_rgComboBoxStrings))
+    {
+        return E_INVALIDARG;
+    }
+
+    _dwComboIndex = dwSelectedItem;
+    _fCpfInvalidChars = false;
+
+    // 0 = UNIVESP (matrícula), 1 = demais instituições (CPF).
+    const bool univesp = (_dwComboIndex == 0);
+
+    CoTaskMemFree(_rgFieldStrings[SFI_EDIT_TEXT]);
+    _rgFieldStrings[SFI_EDIT_TEXT] = nullptr;
+    HRESULT hr = SHStrDupW(L"", &_rgFieldStrings[SFI_EDIT_TEXT]);
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    if (_pCredProvCredentialEvents)
+    {
+        _pCredProvCredentialEvents->BeginFieldUpdates();
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Instituição");
+        _pCredProvCredentialEvents->SetFieldString(
+            this, SFI_LOGONSTATUS_TEXT, univesp ? L"Matrícula" : L"CPF");
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_EDIT_TEXT, L"");
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_DISPLAYNAME_TEXT, L"");
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"");
+        _pCredProvCredentialEvents->SetFieldInteractiveState(
+            this, SFI_EDIT_TEXT, CPFIS_FOCUSED);
+        _pCredProvCredentialEvents->EndFieldUpdates();
+    }
+
+    return S_OK;
+}
+
+'@
+
+$x2 = [regex]::Replace(
+    $x,
+    $setComboPattern,
+    $newSetCombo,
+    1)
+
+if ($x2 -eq $x) {
+    throw "SetComboBoxSelectedValue nao foi ajustado para a instituicao."
+}
+
+$x = $x2
+
 # Limpa o campo que sera usado para mostrar o nome retornado pela API.
 $fullNamePattern = '(?s)    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszUserName;.*?    \}\s*(?=    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszDisplayName;)'
 
 $fullNameReplacement = @'
     if (SUCCEEDED(hr))
     {
-        hr = SHStrDupW(L"", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
+        hr = SHStrDupW(L"Instituição", &_rgFieldStrings[SFI_FULLNAME_TEXT]);
     }
 
 '@
@@ -230,6 +289,28 @@ if ($x2 -eq $x) {
 
 $x = $x2
 
+# O SFI_LOGONSTATUS_TEXT vira o rotulo dinamico do campo de identificacao.
+$logonStatusPattern = '(?s)    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszLogonStatus;.*?    \}\s*(?=    if \(SUCCEEDED\(hr\)\)\s*\{\s*hr = pcpUser->GetSid)'
+
+$logonStatusReplacement = @'
+    if (SUCCEEDED(hr))
+    {
+        hr = SHStrDupW(L"Matrícula", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+    }
+
+'@
+
+$x2 = [regex]::Replace(
+    $x,
+    $logonStatusPattern,
+    $logonStatusReplacement)
+
+if ($x2 -eq $x) {
+    throw "Bloco LogonStatus nao encontrado."
+}
+
+$x = $x2
+
 # Depois de obter o usuario qualificado, personaliza o titulo da tile.
 # Usa regex em vez de Contains/Replace exato para nao depender de CRLF/LF
 # do arquivo baixado pelo Invoke-WebRequest no runner do GitHub Actions.
@@ -252,6 +333,17 @@ $titleBlock = @'
 
         PCWSTR tileTitle = adminTarget ? L"Admin e-GOV" : L"";
         std::wstring maintenanceText;
+
+        // A selecao de instituicao existe apenas no tile de aluno.
+        if (adminTarget)
+        {
+            _rgFieldStatePairs[SFI_FULLNAME_TEXT].cpfs = CPFS_HIDDEN;
+            _rgFieldStatePairs[SFI_COMBOBOX].cpfs = CPFS_HIDDEN;
+
+            CoTaskMemFree(_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+            _rgFieldStrings[SFI_LOGONSTATUS_TEXT] = nullptr;
+            hr = SHStrDupW(L"CPF", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        }
 
         if (!adminTarget)
         {
@@ -308,7 +400,7 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
         const bool adminTarget =
             LabIsAccount(_pszQualifiedUserName, L"AdminEGOV");
         const bool univesp =
-            !adminTarget && _dwComboIndex == 1;
+            !adminTarget && _dwComboIndex == 0;
 
         wchar_t normalized[33] = {};
         size_t digitCount = 0;
@@ -397,7 +489,9 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
         if (_pCredProvCredentialEvents)
         {
             _pCredProvCredentialEvents->BeginFieldUpdates();
-            _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, formattedLine);
+            _pCredProvCredentialEvents->SetFieldString(this, SFI_FULLNAME_TEXT, L"Instituição");
+            _pCredProvCredentialEvents->SetFieldString(
+                this, SFI_LOGONSTATUS_TEXT, univesp ? L"Matrícula" : L"CPF");
 
             if (!inputComplete)
             {
@@ -524,7 +618,7 @@ $authBlock = @'
     }
 
     const bool univesp =
-        !adminTarget && _dwComboIndex == 1;
+        !adminTarget && _dwComboIndex == 0;
 
     wchar_t normalizedIdentifier[33] = {};
     size_t identifierCount = 0;
@@ -700,7 +794,7 @@ foreach ($needle in $requiredCredential) {
 $cpfInputChecks = @(
     @{
         Name = "dropdown usa selecao UNIVESP"
-        Pattern = '_dwComboIndex\s*==\s*1'
+        Pattern = '_dwComboIndex\s*==\s*0'
     },
     @{
         Name = "CPF continua normalizado localmente"
@@ -724,11 +818,11 @@ $cpfInputChecks = @(
     },
     @{
         Name = "eco mostra matricula"
-        Pattern = 'Matrícula:'
+        Pattern = 'L"Matrícula"'
     },
     @{
         Name = "eco mostra CPF"
-        Pattern = 'CPF:'
+        Pattern = 'L"CPF"'
     }
 )
 
@@ -805,5 +899,5 @@ if (-not $checkSupport.Contains('CryptUnprotectData')) {
 Write-Host ""
 Write-Host "e-GOV Login v11-homolog preparado." -ForegroundColor Green
 Write-Host "Tiles: Aluno e-GOV / Admin e-GOV" -ForegroundColor Green
-Write-Host "v11 homolog: Outros=CPF / UNIVESP=matricula + API" -ForegroundColor Green
+Write-Host "v11 homolog fix2: dropdown Instituicao -> UNIVESP=matricula / Outras=CPF" -ForegroundColor Green
 Write-Host "Senha: DPAPI LocalMachine (nao embutida na DLL)" -ForegroundColor Green
