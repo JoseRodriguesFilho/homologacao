@@ -1,0 +1,1228 @@
+#include <windows.h>
+#include <winhttp.h>
+#include <wincrypt.h>
+#include <string>
+#include <vector>
+#include <cctype>
+#include <cwctype>
+
+#include "LabSupport.h"
+
+#pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "crypt32.lib")
+#pragma comment(lib, "advapi32.lib")
+
+namespace
+{
+    constexpr wchar_t kRegPath[] = L"SOFTWARE\\e-GOV\\LabCPFProvider";
+    constexpr wchar_t kPipePath[] = L"\\\\.\\pipe\\eGOVLabCPFAgent";
+    constexpr size_t kMaxResponse = 32 * 1024;
+
+    class HttpHandle
+    {
+    public:
+        explicit HttpHandle(HINTERNET h = nullptr) : _h(h) {}
+        ~HttpHandle()
+        {
+            if (_h != nullptr)
+            {
+                WinHttpCloseHandle(_h);
+            }
+        }
+
+        operator HINTERNET() const { return _h; }
+        bool valid() const { return _h != nullptr; }
+
+        HttpHandle(const HttpHandle&) = delete;
+        HttpHandle& operator=(const HttpHandle&) = delete;
+
+    private:
+        HINTERNET _h;
+    };
+
+    bool ReadRegString(PCWSTR valueName, std::wstring& value)
+    {
+        HKEY key = nullptr;
+
+        LONG status = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            kRegPath,
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        DWORD type = 0;
+        DWORD cb = 0;
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            nullptr,
+            &cb);
+
+        if (status != ERROR_SUCCESS ||
+            (type != REG_SZ && type != REG_EXPAND_SZ) ||
+            cb < sizeof(wchar_t))
+        {
+            RegCloseKey(key);
+            return false;
+        }
+
+        std::vector<wchar_t> buffer(
+            (cb / sizeof(wchar_t)) + 2,
+            L'\0');
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            reinterpret_cast<LPBYTE>(buffer.data()),
+            &cb);
+
+        RegCloseKey(key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        buffer.back() = L'\0';
+        value.assign(buffer.data());
+
+        return !value.empty();
+    }
+
+    DWORD ReadRegDword(PCWSTR valueName, DWORD defaultValue)
+    {
+        HKEY key = nullptr;
+
+        LONG status = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            kRegPath,
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            return defaultValue;
+        }
+
+        DWORD type = 0;
+        DWORD data = 0;
+        DWORD cb = sizeof(data);
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            reinterpret_cast<LPBYTE>(&data),
+            &cb);
+
+        RegCloseKey(key);
+
+        if (status != ERROR_SUCCESS || type != REG_DWORD)
+        {
+            return defaultValue;
+        }
+
+        return data;
+    }
+
+    bool ReadRegBinary(
+        PCWSTR valueName,
+        std::vector<BYTE>& data)
+    {
+        HKEY key = nullptr;
+
+        LONG status = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            kRegPath,
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        DWORD type = 0;
+        DWORD cb = 0;
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            nullptr,
+            &cb);
+
+        if (status != ERROR_SUCCESS ||
+            type != REG_BINARY ||
+            cb == 0)
+        {
+            RegCloseKey(key);
+            return false;
+        }
+
+        data.resize(cb);
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            data.data(),
+            &cb);
+
+        RegCloseKey(key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            data.clear();
+            return false;
+        }
+
+        data.resize(cb);
+        return true;
+    }
+
+    std::string WideToUtf8(const std::wstring& input)
+    {
+        if (input.empty())
+        {
+            return {};
+        }
+
+        int required = WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            input.data(),
+            static_cast<int>(input.size()),
+            nullptr,
+            0,
+            nullptr,
+            nullptr);
+
+        if (required <= 0)
+        {
+            return {};
+        }
+
+        std::string output(
+            static_cast<size_t>(required),
+            '\0');
+
+        if (WideCharToMultiByte(
+                CP_UTF8,
+                WC_ERR_INVALID_CHARS,
+                input.data(),
+                static_cast<int>(input.size()),
+                output.data(),
+                required,
+                nullptr,
+                nullptr) <= 0)
+        {
+            return {};
+        }
+
+        return output;
+    }
+
+    std::wstring Utf8ToWide(const std::string& input)
+    {
+        if (input.empty())
+        {
+            return {};
+        }
+
+        int required = MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            input.data(),
+            static_cast<int>(input.size()),
+            nullptr,
+            0);
+
+        if (required <= 0)
+        {
+            return {};
+        }
+
+        std::wstring output(
+            static_cast<size_t>(required),
+            L'\0');
+
+        if (MultiByteToWideChar(
+                CP_UTF8,
+                MB_ERR_INVALID_CHARS,
+                input.data(),
+                static_cast<int>(input.size()),
+                output.data(),
+                required) <= 0)
+        {
+            return {};
+        }
+
+        return output;
+    }
+
+    std::string EscapeJson(const std::string& input)
+    {
+        std::string output;
+        output.reserve(input.size() + 16);
+
+        for (unsigned char ch : input)
+        {
+            switch (ch)
+            {
+            case '\\': output += "\\\\"; break;
+            case '"': output += "\\\""; break;
+            case '\b': output += "\\b"; break;
+            case '\f': output += "\\f"; break;
+            case '\n': output += "\\n"; break;
+            case '\r': output += "\\r"; break;
+            case '\t': output += "\\t"; break;
+            default:
+                if (ch >= 0x20)
+                {
+                    output.push_back(static_cast<char>(ch));
+                }
+                break;
+            }
+        }
+
+        return output;
+    }
+
+    std::wstring ComputerName()
+    {
+        wchar_t buffer[MAX_COMPUTERNAME_LENGTH + 1] = {};
+        DWORD size = ARRAYSIZE(buffer);
+
+        if (!GetComputerNameW(buffer, &size))
+        {
+            return L"UNKNOWN";
+        }
+
+        return std::wstring(buffer, size);
+    }
+
+    bool JsonBool(
+        const std::string& json,
+        const std::string& key,
+        bool defaultValue)
+    {
+        const std::string marker = "\"" + key + "\"";
+        size_t pos = json.find(marker);
+
+        if (pos == std::string::npos)
+        {
+            return defaultValue;
+        }
+
+        pos = json.find(':', pos + marker.size());
+
+        if (pos == std::string::npos)
+        {
+            return defaultValue;
+        }
+
+        ++pos;
+
+        while (pos < json.size() &&
+               std::isspace(
+                   static_cast<unsigned char>(json[pos])))
+        {
+            ++pos;
+        }
+
+        if (json.compare(pos, 4, "true") == 0)
+        {
+            return true;
+        }
+
+        if (json.compare(pos, 5, "false") == 0)
+        {
+            return false;
+        }
+
+        return defaultValue;
+    }
+
+    bool AppendUnicodeEscape(
+        const std::string& json,
+        size_t& pos,
+        std::wstring& output)
+    {
+        if (pos + 4 > json.size())
+        {
+            return false;
+        }
+
+        unsigned value = 0;
+
+        for (int i = 0; i < 4; ++i)
+        {
+            char ch = json[pos++];
+
+            value <<= 4;
+
+            if (ch >= '0' && ch <= '9')
+            {
+                value |= static_cast<unsigned>(ch - '0');
+            }
+            else if (ch >= 'a' && ch <= 'f')
+            {
+                value |= static_cast<unsigned>(ch - 'a' + 10);
+            }
+            else if (ch >= 'A' && ch <= 'F')
+            {
+                value |= static_cast<unsigned>(ch - 'A' + 10);
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        output.push_back(static_cast<wchar_t>(value));
+        return true;
+    }
+
+    std::wstring JsonString(
+        const std::string& json,
+        const std::string& key)
+    {
+        const std::string marker = "\"" + key + "\"";
+        size_t pos = json.find(marker);
+
+        if (pos == std::string::npos)
+        {
+            return {};
+        }
+
+        pos = json.find(':', pos + marker.size());
+
+        if (pos == std::string::npos)
+        {
+            return {};
+        }
+
+        ++pos;
+
+        while (pos < json.size() &&
+               std::isspace(
+                   static_cast<unsigned char>(json[pos])))
+        {
+            ++pos;
+        }
+
+        if (json.compare(pos, 4, "null") == 0)
+        {
+            return {};
+        }
+
+        if (pos >= json.size() || json[pos] != '"')
+        {
+            return {};
+        }
+
+        ++pos;
+
+        std::string utf8;
+        std::wstring wideEscapes;
+
+        // Primeiro decodifica os escapes simples mantendo UTF-8.
+        while (pos < json.size())
+        {
+            char ch = json[pos++];
+
+            if (ch == '"')
+            {
+                break;
+            }
+
+            if (ch != '\\')
+            {
+                utf8.push_back(ch);
+                continue;
+            }
+
+            if (pos >= json.size())
+            {
+                break;
+            }
+
+            char esc = json[pos++];
+
+            switch (esc)
+            {
+            case '"': utf8.push_back('"'); break;
+            case '\\': utf8.push_back('\\'); break;
+            case '/': utf8.push_back('/'); break;
+            case 'b': utf8.push_back('\b'); break;
+            case 'f': utf8.push_back('\f'); break;
+            case 'n': utf8.push_back('\n'); break;
+            case 'r': utf8.push_back('\r'); break;
+            case 't': utf8.push_back('\t'); break;
+
+            case 'u':
+            {
+                // Converte a parte UTF-8 acumulada e limpa.
+                if (!utf8.empty())
+                {
+                    wideEscapes += Utf8ToWide(utf8);
+                    utf8.clear();
+                }
+
+                if (!AppendUnicodeEscape(
+                        json,
+                        pos,
+                        wideEscapes))
+                {
+                    return {};
+                }
+
+                break;
+            }
+
+            default:
+                return {};
+            }
+        }
+
+        if (!utf8.empty())
+        {
+            wideEscapes += Utf8ToWide(utf8);
+        }
+
+        return wideEscapes;
+    }
+
+    void ParseResponse(
+        const std::string& json,
+        LAB_AUTH_RESPONSE* response)
+    {
+        response->authorized = JsonBool(
+            json,
+            "authorized",
+            false);
+
+        response->recognized = JsonBool(
+            json,
+            "recognized",
+            false);
+
+        response->allowed = JsonBool(
+            json,
+            "allowed",
+            false);
+
+        response->maintenance = JsonBool(
+            json,
+            "maintenance",
+            false);
+
+        response->reason = JsonString(json, "reason");
+        response->message = JsonString(json, "message");
+        response->name = JsonString(json, "name");
+        response->role = JsonString(json, "role");
+        response->course = JsonString(json, "course");
+        response->maintenanceMessage = JsonString(
+            json,
+            "maintenance_message");
+        response->sessionId = JsonString(json, "session_id");
+        response->action = JsonString(json, "action");
+        response->windowsAccount = JsonString(
+            json,
+            "windows_account");
+    }
+
+    LAB_AUTH_RESULT PostJson(
+        PCWSTR endpoint,
+        PCWSTR identifier,
+        bool univesp,
+        bool adminTarget,
+        LAB_AUTH_RESPONSE* response)
+    {
+        if (response == nullptr ||
+            identifier == nullptr ||
+            *identifier == L'\0')
+        {
+            return LAB_AUTH_DENIED;
+        }
+
+        *response = LAB_AUTH_RESPONSE{};
+
+        std::wstring baseUrl;
+        std::wstring token;
+
+        if (!ReadRegString(L"ApiBaseUrl", baseUrl) ||
+            !ReadRegString(L"ApiToken", token))
+        {
+            return LAB_AUTH_NOT_CONFIGURED;
+        }
+
+        while (!baseUrl.empty() &&
+               baseUrl.back() == L'/')
+        {
+            baseUrl.pop_back();
+        }
+
+        std::wstring url = baseUrl + endpoint;
+
+        URL_COMPONENTS components = {};
+        components.dwStructSize = sizeof(components);
+        components.dwSchemeLength = static_cast<DWORD>(-1);
+        components.dwHostNameLength = static_cast<DWORD>(-1);
+        components.dwUrlPathLength = static_cast<DWORD>(-1);
+        components.dwExtraInfoLength = static_cast<DWORD>(-1);
+
+        if (!WinHttpCrackUrl(
+                url.c_str(),
+                0,
+                0,
+                &components))
+        {
+            return LAB_AUTH_NOT_CONFIGURED;
+        }
+
+        if (components.nScheme != INTERNET_SCHEME_HTTPS &&
+            components.nScheme != INTERNET_SCHEME_HTTP)
+        {
+            return LAB_AUTH_NOT_CONFIGURED;
+        }
+
+        if (components.nScheme == INTERNET_SCHEME_HTTP &&
+            ReadRegDword(L"AllowHttp", 0) != 1)
+        {
+            return LAB_AUTH_NOT_CONFIGURED;
+        }
+
+        std::wstring host(
+            components.lpszHostName,
+            components.dwHostNameLength);
+
+        std::wstring path;
+
+        if (components.dwUrlPathLength > 0)
+        {
+            path.assign(
+                components.lpszUrlPath,
+                components.dwUrlPathLength);
+        }
+
+        if (components.dwExtraInfoLength > 0)
+        {
+            path.append(
+                components.lpszExtraInfo,
+                components.dwExtraInfoLength);
+        }
+
+        if (path.empty())
+        {
+            path = L"/";
+        }
+
+        HttpHandle session(
+            WinHttpOpen(
+                L"eGOV-Login/11-homolog",
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                WINHTTP_NO_PROXY_NAME,
+                WINHTTP_NO_PROXY_BYPASS,
+                0));
+
+        if (!session.valid())
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        WinHttpSetTimeouts(
+            session,
+            1500,
+            1500,
+            2500,
+            3000);
+
+        HttpHandle connection(
+            WinHttpConnect(
+                session,
+                host.c_str(),
+                components.nPort,
+                0));
+
+        if (!connection.valid())
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        DWORD flags = 0;
+
+        if (components.nScheme == INTERNET_SCHEME_HTTPS)
+        {
+            flags |= WINHTTP_FLAG_SECURE;
+        }
+
+        HttpHandle request(
+            WinHttpOpenRequest(
+                connection,
+                L"POST",
+                path.c_str(),
+                nullptr,
+                WINHTTP_NO_REFERER,
+                WINHTTP_DEFAULT_ACCEPT_TYPES,
+                flags));
+
+        if (!request.valid())
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        std::string cpfUtf8 =
+            WideToUtf8(identifier);
+
+        std::string computerUtf8 =
+            WideToUtf8(ComputerName());
+
+        std::string target =
+            adminTarget ? "admin" : "student";
+
+        std::string institution = univesp ? "univesp" : "outros";
+        std::string identifierType = univesp ? "matricula" : "cpf";
+
+        std::string body =
+            "{\"identifier\":\"" +
+            EscapeJson(cpfUtf8) +
+            "\",\"identifier_type\":\"" + identifierType +
+            "\",\"institution\":\"" + institution +
+            "\",\"computer\":\"" +
+            EscapeJson(computerUtf8) +
+            "\",\"target\":\"" +
+            target +
+            "\"}";
+
+        std::wstring headers =
+            L"Content-Type: application/json\r\n"
+            L"Accept: application/json\r\n"
+            L"X-eGOV-Token: " +
+            token +
+            L"\r\n";
+
+        BOOL sent = WinHttpSendRequest(
+            request,
+            headers.c_str(),
+            static_cast<DWORD>(-1),
+            reinterpret_cast<LPVOID>(
+                const_cast<char*>(body.data())),
+            static_cast<DWORD>(body.size()),
+            static_cast<DWORD>(body.size()),
+            0);
+
+        if (!sent ||
+            !WinHttpReceiveResponse(
+                request,
+                nullptr))
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        DWORD statusCode = 0;
+        DWORD statusSize = sizeof(statusCode);
+
+        if (!WinHttpQueryHeaders(
+                request,
+                WINHTTP_QUERY_STATUS_CODE |
+                    WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX,
+                &statusCode,
+                &statusSize,
+                WINHTTP_NO_HEADER_INDEX))
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        if (statusCode == 401 ||
+            statusCode == 403)
+        {
+            return LAB_AUTH_CLIENT_UNAUTHORIZED;
+        }
+
+        if (statusCode != 200)
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        std::string responseBody;
+
+        while (true)
+        {
+            DWORD available = 0;
+
+            if (!WinHttpQueryDataAvailable(
+                    request,
+                    &available))
+            {
+                return LAB_AUTH_SERVICE_UNAVAILABLE;
+            }
+
+            if (available == 0)
+            {
+                break;
+            }
+
+            if (responseBody.size() + available >
+                kMaxResponse)
+            {
+                return LAB_AUTH_SERVICE_UNAVAILABLE;
+            }
+
+            size_t oldSize =
+                responseBody.size();
+
+            responseBody.resize(
+                oldSize + available);
+
+            DWORD read = 0;
+
+            if (!WinHttpReadData(
+                    request,
+                    responseBody.data() + oldSize,
+                    available,
+                    &read))
+            {
+                return LAB_AUTH_SERVICE_UNAVAILABLE;
+            }
+
+            responseBody.resize(
+                oldSize + read);
+        }
+
+        ParseResponse(
+            responseBody,
+            response);
+
+        return LAB_AUTH_OK;
+    }
+}
+
+bool LabCpfExtractDigits(
+    PCWSTR input,
+    wchar_t* digits11,
+    size_t* digitCount,
+    bool* invalidChars,
+    size_t* excessDigits)
+{
+    if (digits11 == nullptr ||
+        digitCount == nullptr ||
+        invalidChars == nullptr ||
+        excessDigits == nullptr)
+    {
+        return false;
+    }
+
+    digits11[0] = L'\0';
+    *digitCount = 0;
+    *invalidChars = false;
+    *excessDigits = 0;
+
+    if (input == nullptr)
+    {
+        return true;
+    }
+
+    size_t count = 0;
+    size_t excess = 0;
+    bool invalid = false;
+
+    for (PCWSTR p = input; *p != L'\0'; ++p)
+    {
+        if (*p >= L'0' && *p <= L'9')
+        {
+            if (count < 11)
+            {
+                digits11[count++] = *p;
+            }
+            else
+            {
+                // 12o digito ou superior: excesso explicito.
+                // Truncar em silencio autorizaria um CPF diferente do digitado.
+                ++excess;
+            }
+        }
+        else if (*p == L'.' ||
+                 *p == L'-' ||
+                 *p == L'/' ||
+                 *p == L' ')
+        {
+            // Separadores comuns sao ignorados: colar 000.000.000-00 funciona.
+            continue;
+        }
+        else
+        {
+            // Letras e demais simbolos invalidam a entrada.
+            invalid = true;
+        }
+    }
+
+    digits11[count] = L'\0';
+
+    *digitCount = count;
+    *invalidChars = invalid;
+    *excessDigits = excess;
+
+    return !invalid && excess == 0;
+}
+
+bool LabCpfCheckDigitsOk(
+    PCWSTR digits11)
+{
+    if (digits11 == nullptr)
+    {
+        return false;
+    }
+
+    size_t length = 0;
+
+    while (digits11[length] != L'\0')
+    {
+        if (digits11[length] < L'0' ||
+            digits11[length] > L'9')
+        {
+            return false;
+        }
+
+        ++length;
+
+        if (length > 11)
+        {
+            return false;
+        }
+    }
+
+    if (length != 11)
+    {
+        return false;
+    }
+
+    bool allSame = true;
+
+    for (size_t i = 1; i < 11; ++i)
+    {
+        if (digits11[i] != digits11[0])
+        {
+            allSame = false;
+            break;
+        }
+    }
+
+    if (allSame)
+    {
+        // Sequencias como 111.111.111-11 satisfazem o calculo, mas nao existem.
+        return false;
+    }
+
+    for (int pos = 9; pos <= 10; ++pos)
+    {
+        int total = 0;
+        const int weight = pos + 1;
+
+        for (int i = 0; i < pos; ++i)
+        {
+            total += (digits11[i] - L'0') * (weight - i);
+        }
+
+        int digit = (total * 10) % 11;
+
+        if (digit == 10)
+        {
+            digit = 0;
+        }
+
+        if (digit != (digits11[pos] - L'0'))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool LabMatriculaExtractDigits(
+    PCWSTR input,
+    wchar_t* digits32,
+    size_t* digitCount,
+    bool* invalidChars,
+    size_t* excessDigits)
+{
+    if (!digits32 || !digitCount || !invalidChars || !excessDigits)
+    {
+        return false;
+    }
+
+    digits32[0] = L'\0';
+    *digitCount = 0;
+    *invalidChars = false;
+    *excessDigits = 0;
+
+    if (!input)
+    {
+        return true;
+    }
+
+    for (PCWSTR p = input; *p; ++p)
+    {
+        if (*p >= L'0' && *p <= L'9')
+        {
+            if (*digitCount < 32)
+            {
+                digits32[*digitCount] = *p;
+                ++(*digitCount);
+                digits32[*digitCount] = L'\0';
+            }
+            else
+            {
+                ++(*excessDigits);
+            }
+        }
+        else if (*p == L' ' || *p == L'-' || *p == L'.')
+        {
+            // separadores comuns sao ignorados na homologacao
+        }
+        else
+        {
+            *invalidChars = true;
+        }
+    }
+
+    return !*invalidChars && *excessDigits == 0;
+}
+
+LAB_AUTH_RESULT LabGetStatus(
+    LAB_AUTH_RESPONSE* response)
+{
+    // Reutiliza o transporte autenticado; /status ignora o corpo da requisicao.
+    return PostJson(
+        L"/status",
+        L"0",
+        false,
+        false,
+        response);
+}
+
+LAB_AUTH_RESULT LabPreviewIdentity(
+    PCWSTR identifier,
+    bool univesp,
+    bool adminTarget,
+    LAB_AUTH_RESPONSE* response)
+{
+    return PostJson(
+        L"/auth/preview",
+        identifier,
+        univesp,
+        adminTarget,
+        response);
+}
+
+LAB_AUTH_RESULT LabAuthorizeIdentity(
+    PCWSTR identifier,
+    bool univesp,
+    bool adminTarget,
+    LAB_AUTH_RESPONSE* response)
+{
+    LAB_AUTH_RESULT result = PostJson(
+        L"/auth/login",
+        identifier,
+        univesp,
+        adminTarget,
+        response);
+
+    if (result == LAB_AUTH_OK &&
+        !response->authorized)
+    {
+        return LAB_AUTH_DENIED;
+    }
+
+    return result;
+}
+
+bool LabReadLocalPassword(
+    bool adminTarget,
+    std::wstring& password)
+{
+    password.clear();
+
+    std::vector<BYTE> encrypted;
+
+    PCWSTR valueName =
+        adminTarget
+            ? L"AdminSecret"
+            : L"StudentSecret";
+
+    if (!ReadRegBinary(
+            valueName,
+            encrypted))
+    {
+        return false;
+    }
+
+    DATA_BLOB input = {};
+    input.pbData = encrypted.data();
+    input.cbData =
+        static_cast<DWORD>(encrypted.size());
+
+    DATA_BLOB output = {};
+
+    if (!CryptUnprotectData(
+            &input,
+            nullptr,
+            nullptr,
+            nullptr,
+            nullptr,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &output))
+    {
+        return false;
+    }
+
+    bool ok = false;
+
+    if (output.pbData != nullptr &&
+        output.cbData >= sizeof(wchar_t))
+    {
+        size_t chars =
+            output.cbData / sizeof(wchar_t);
+
+        const wchar_t* raw =
+            reinterpret_cast<const wchar_t*>(
+                output.pbData);
+
+        while (chars > 0 &&
+               raw[chars - 1] == L'\0')
+        {
+            --chars;
+        }
+
+        password.assign(raw, chars);
+        ok = !password.empty();
+
+        SecureZeroMemory(
+            output.pbData,
+            output.cbData);
+    }
+
+    LocalFree(output.pbData);
+    SecureZeroMemory(
+        encrypted.data(),
+        encrypted.size());
+
+    return ok;
+}
+
+void LabNotifyAgent(
+    const LAB_AUTH_RESPONSE& response)
+{
+    if (!response.authorized ||
+        response.sessionId.empty() ||
+        response.windowsAccount.empty())
+    {
+        return;
+    }
+
+    HANDLE pipe = CreateFileW(
+        kPipePath,
+        GENERIC_WRITE,
+        0,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr);
+
+    if (pipe == INVALID_HANDLE_VALUE)
+    {
+        return;
+    }
+
+    std::string sessionId =
+        EscapeJson(
+            WideToUtf8(
+                response.sessionId));
+
+    std::string account =
+        EscapeJson(
+            WideToUtf8(
+                response.windowsAccount));
+
+    std::string role =
+        EscapeJson(
+            WideToUtf8(
+                response.role));
+
+    std::string action =
+        EscapeJson(
+            WideToUtf8(
+                response.action));
+
+    std::string payload =
+        "{\"session_id\":\"" +
+        sessionId +
+        "\",\"windows_account\":\"" +
+        account +
+        "\",\"role\":\"" +
+        role +
+        "\",\"action\":\"" +
+        action +
+        "\"}";
+
+    DWORD written = 0;
+
+    WriteFile(
+        pipe,
+        payload.data(),
+        static_cast<DWORD>(
+            payload.size()),
+        &written,
+        nullptr);
+
+    FlushFileBuffers(pipe);
+    CloseHandle(pipe);
+}
+
+bool LabIsAccount(
+    PCWSTR qualifiedUserName,
+    PCWSTR leafAccountName)
+{
+    if (qualifiedUserName == nullptr ||
+        leafAccountName == nullptr)
+    {
+        return false;
+    }
+
+    PCWSTR leaf =
+        wcsrchr(
+            qualifiedUserName,
+            L'\\');
+
+    if (leaf != nullptr)
+    {
+        ++leaf;
+    }
+    else
+    {
+        leaf = qualifiedUserName;
+    }
+
+    return _wcsicmp(
+        leaf,
+        leafAccountName) == 0;
+}

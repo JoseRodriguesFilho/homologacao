@@ -1,0 +1,365 @@
+#include <initguid.h>
+#include "CSampleProvider.h"
+#include "CSampleCredential.h"
+#include "guid.h"
+
+namespace
+{
+    bool UserMatches(
+        _In_ ICredentialProviderUser* user,
+        _In_z_ PCWSTR expected)
+    {
+        PWSTR userName = nullptr;
+
+        HRESULT hr = user->GetStringValue(
+            PKEY_Identity_UserName,
+            &userName);
+
+        if (FAILED(hr) || userName == nullptr)
+        {
+            CoTaskMemFree(userName);
+            return false;
+        }
+
+        PCWSTR leaf = wcsrchr(
+            userName,
+            L'\\');
+
+        leaf = (leaf != nullptr)
+            ? leaf + 1
+            : userName;
+
+        bool match =
+            (_wcsicmp(leaf, expected) == 0);
+
+        CoTaskMemFree(userName);
+        return match;
+    }
+}
+
+CSampleProvider::CSampleProvider() :
+    _cRef(1),
+    _credentialCount(0),
+    _fRecreateEnumeratedCredentials(true),
+    _cpus(CPUS_INVALID),
+    _pCredProviderUserArray(nullptr)
+{
+    _pCredentials[0] = nullptr;
+    _pCredentials[1] = nullptr;
+    DllAddRef();
+}
+
+CSampleProvider::~CSampleProvider()
+{
+    _ReleaseEnumeratedCredentials();
+
+    if (_pCredProviderUserArray != nullptr)
+    {
+        _pCredProviderUserArray->Release();
+        _pCredProviderUserArray = nullptr;
+    }
+
+    DllRelease();
+}
+
+HRESULT CSampleProvider::SetUsageScenario(
+    CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
+    DWORD /*dwFlags*/)
+{
+    HRESULT hr = E_INVALIDARG;
+
+    switch (cpus)
+    {
+    case CPUS_LOGON:
+    case CPUS_UNLOCK_WORKSTATION:
+        _cpus = cpus;
+        _fRecreateEnumeratedCredentials = true;
+        hr = S_OK;
+        break;
+
+    case CPUS_CHANGE_PASSWORD:
+    case CPUS_CREDUI:
+        hr = E_NOTIMPL;
+        break;
+
+    default:
+        hr = E_INVALIDARG;
+        break;
+    }
+
+    return hr;
+}
+
+HRESULT CSampleProvider::SetSerialization(
+    _In_ CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION const* /*pcpcs*/)
+{
+    return E_NOTIMPL;
+}
+
+HRESULT CSampleProvider::Advise(
+    _In_ ICredentialProviderEvents* /*pcpe*/,
+    _In_ UINT_PTR /*upAdviseContext*/)
+{
+    return E_NOTIMPL;
+}
+
+HRESULT CSampleProvider::UnAdvise()
+{
+    return E_NOTIMPL;
+}
+
+HRESULT CSampleProvider::GetFieldDescriptorCount(
+    _Out_ DWORD* pdwCount)
+{
+    *pdwCount = SFI_NUM_FIELDS;
+    return S_OK;
+}
+
+HRESULT CSampleProvider::GetFieldDescriptorAt(
+    DWORD dwIndex,
+    _Outptr_result_nullonfailure_
+        CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR** ppcpfd)
+{
+    if (ppcpfd == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    *ppcpfd = nullptr;
+
+    if (dwIndex >= SFI_NUM_FIELDS)
+    {
+        return E_INVALIDARG;
+    }
+
+    return FieldDescriptorCoAllocCopy(
+        s_rgCredProvFieldDescriptors[dwIndex],
+        ppcpfd);
+}
+
+HRESULT CSampleProvider::GetCredentialCount(
+    _Out_ DWORD* pdwCount,
+    _Out_ DWORD* pdwDefault,
+    _Out_ BOOL* pbAutoLogonWithDefault)
+{
+    if (pdwCount == nullptr ||
+        pdwDefault == nullptr ||
+        pbAutoLogonWithDefault == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    *pbAutoLogonWithDefault = FALSE;
+
+    if (_fRecreateEnumeratedCredentials)
+    {
+        _fRecreateEnumeratedCredentials = false;
+        _ReleaseEnumeratedCredentials();
+        _CreateEnumeratedCredentials();
+    }
+
+    *pdwCount = _credentialCount;
+
+    *pdwDefault =
+        (_credentialCount > 0)
+            ? 0
+            : CREDENTIAL_PROVIDER_NO_DEFAULT;
+
+    return S_OK;
+}
+
+HRESULT CSampleProvider::GetCredentialAt(
+    DWORD dwIndex,
+    _Outptr_result_nullonfailure_
+        ICredentialProviderCredential** ppcpc)
+{
+    if (ppcpc == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    *ppcpc = nullptr;
+
+    if (dwIndex >= _credentialCount ||
+        dwIndex >= ARRAYSIZE(_pCredentials) ||
+        _pCredentials[dwIndex] == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    return _pCredentials[dwIndex]->QueryInterface(
+        IID_PPV_ARGS(ppcpc));
+}
+
+HRESULT CSampleProvider::SetUserArray(
+    _In_ ICredentialProviderUserArray* users)
+{
+    if (users == nullptr)
+    {
+        return E_INVALIDARG;
+    }
+
+    if (_pCredProviderUserArray != nullptr)
+    {
+        _pCredProviderUserArray->Release();
+    }
+
+    _pCredProviderUserArray = users;
+    _pCredProviderUserArray->AddRef();
+    _fRecreateEnumeratedCredentials = true;
+
+    return S_OK;
+}
+
+void CSampleProvider::_CreateEnumeratedCredentials()
+{
+    switch (_cpus)
+    {
+    case CPUS_LOGON:
+    case CPUS_UNLOCK_WORKSTATION:
+        _EnumerateCredentials();
+        break;
+
+    default:
+        break;
+    }
+}
+
+void CSampleProvider::_ReleaseEnumeratedCredentials()
+{
+    for (DWORD i = 0;
+         i < ARRAYSIZE(_pCredentials);
+         ++i)
+    {
+        if (_pCredentials[i] != nullptr)
+        {
+            _pCredentials[i]->Release();
+            _pCredentials[i] = nullptr;
+        }
+    }
+
+    _credentialCount = 0;
+}
+
+HRESULT CSampleProvider::_EnumerateCredentials()
+{
+    _credentialCount = 0;
+
+    if (_pCredProviderUserArray == nullptr)
+    {
+        return E_UNEXPECTED;
+    }
+
+    DWORD userCount = 0;
+
+    HRESULT hr =
+        _pCredProviderUserArray->GetCount(
+            &userCount);
+
+    if (FAILED(hr))
+    {
+        return hr;
+    }
+
+    // Ordem visual desejada:
+    // 0 = Aluno e-GOV
+    // 1 = Admin e-GOV
+    const PCWSTR wanted[] =
+    {
+        L"AlunoEGOV",
+        L"AdminEGOV"
+    };
+
+    for (DWORD wantedIndex = 0;
+         wantedIndex < ARRAYSIZE(wanted) &&
+         _credentialCount < ARRAYSIZE(_pCredentials);
+         ++wantedIndex)
+    {
+        for (DWORD i = 0;
+             i < userCount;
+             ++i)
+        {
+            ICredentialProviderUser* user = nullptr;
+
+            hr = _pCredProviderUserArray->GetAt(
+                i,
+                &user);
+
+            if (FAILED(hr) ||
+                user == nullptr)
+            {
+                continue;
+            }
+
+            bool match =
+                UserMatches(
+                    user,
+                    wanted[wantedIndex]);
+
+            if (match)
+            {
+                CSampleCredential* credential =
+                    new(std::nothrow)
+                        CSampleCredential();
+
+                if (credential == nullptr)
+                {
+                    user->Release();
+                    return E_OUTOFMEMORY;
+                }
+
+                hr = credential->Initialize(
+                    _cpus,
+                    s_rgCredProvFieldDescriptors,
+                    s_rgFieldStatePairs,
+                    user);
+
+                if (SUCCEEDED(hr))
+                {
+                    _pCredentials[
+                        _credentialCount++] =
+                            credential;
+                }
+                else
+                {
+                    credential->Release();
+                }
+
+                user->Release();
+                break;
+            }
+
+            user->Release();
+        }
+    }
+
+    return (_credentialCount > 0)
+        ? S_OK
+        : HRESULT_FROM_WIN32(ERROR_NO_SUCH_USER);
+}
+
+HRESULT CSample_CreateInstance(
+    _In_ REFIID riid,
+    _Outptr_ void** ppv)
+{
+    HRESULT hr;
+
+    CSampleProvider* provider =
+        new(std::nothrow)
+            CSampleProvider();
+
+    if (provider != nullptr)
+    {
+        hr = provider->QueryInterface(
+            riid,
+            ppv);
+
+        provider->Release();
+    }
+    else
+    {
+        hr = E_OUTOFMEMORY;
+    }
+
+    return hr;
+}

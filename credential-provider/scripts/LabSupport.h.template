@@ -1,0 +1,83 @@
+#pragma once
+
+#include <windows.h>
+#include <string>
+
+enum LAB_AUTH_RESULT
+{
+    LAB_AUTH_OK = 0,
+    LAB_AUTH_DENIED,
+    LAB_AUTH_SERVICE_UNAVAILABLE,
+    LAB_AUTH_NOT_CONFIGURED,
+    LAB_AUTH_CLIENT_UNAUTHORIZED
+};
+
+struct LAB_AUTH_RESPONSE
+{
+    bool authorized = false;
+    bool recognized = false;
+    bool allowed = false;
+    bool maintenance = false;
+
+    std::wstring reason;
+    std::wstring message;
+    std::wstring name;
+    std::wstring role;
+    std::wstring course;
+    std::wstring maintenanceMessage;
+    std::wstring sessionId;
+    std::wstring action;
+    std::wstring windowsAccount;
+};
+
+LAB_AUTH_RESULT LabGetStatus(
+    _Out_ LAB_AUTH_RESPONSE* response);
+
+LAB_AUTH_RESULT LabPreviewIdentity(
+    _In_z_ PCWSTR identifier,
+    bool univesp,
+    bool adminTarget,
+    _Out_ LAB_AUTH_RESPONSE* response);
+
+LAB_AUTH_RESULT LabAuthorizeIdentity(
+    _In_z_ PCWSTR identifier,
+    bool univesp,
+    bool adminTarget,
+    _Out_ LAB_AUTH_RESPONSE* response);
+
+bool LabReadLocalPassword(
+    bool adminTarget,
+    _Out_ std::wstring& password);
+
+void LabNotifyAgent(
+    _In_ const LAB_AUTH_RESPONSE& response);
+
+bool LabIsAccount(
+    _In_opt_z_ PCWSTR qualifiedUserName,
+    _In_z_ PCWSTR leafAccountName);
+
+// Extrai ate 11 digitos de 'input', ignorando os separadores '.', '-', '/' e
+// espaco, para que um CPF colado ja formatado seja aceito. Os digitos
+// entendidos sao sempre escritos em digits11 (buffer wchar_t[12]), mesmo
+// quando a entrada e invalida, para alimentar o eco na tela de logon.
+// invalidChars indica letra ou simbolo estranho; excessDigits conta os
+// digitos alem do 11o. Retorna true quando a entrada e integralmente valida.
+bool LabCpfExtractDigits(
+    _In_opt_z_ PCWSTR input,
+    _Out_writes_z_(12) wchar_t* digits11,
+    _Out_ size_t* digitCount,
+    _Out_ bool* invalidChars,
+    _Out_ size_t* excessDigits);
+
+// Espelha valid_cpf da API (app/main.py): exige 11 digitos, rejeita
+// sequencias de digitos iguais e confere os dois digitos verificadores.
+bool LabCpfCheckDigitsOk(
+    _In_opt_z_ PCWSTR digits11);
+
+// Matricula UNIVESP da homologacao: somente digitos, 3..32 caracteres.
+bool LabMatriculaExtractDigits(
+    _In_opt_z_ PCWSTR input,
+    _Out_writes_z_(33) wchar_t* digits32,
+    _Out_ size_t* digitCount,
+    _Out_ bool* invalidChars,
+    _Out_ size_t* excessDigits);

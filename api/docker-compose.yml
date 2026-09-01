@@ -1,0 +1,28 @@
+services:
+  egov-login-api:
+    container_name: eGOV-Login-API
+    build: .
+    environment:
+      EGOV_DB_PATH: /data/labcpf.db
+
+      # v8
+      EGOV_API_TOKEN: ${EGOV_API_TOKEN:-}
+      EGOV_ADMIN_TOKEN: ${EGOV_ADMIN_TOKEN:-}
+      EGOV_SESSION_TIMEOUT_SECONDS: ${EGOV_SESSION_TIMEOUT_SECONDS:-180}
+      EGOV_SEED_CPF: ${EGOV_SEED_CPF:-}
+      EGOV_SEED_NAME: ${EGOV_SEED_NAME:-}
+      EGOV_SEED_ROLE: ${EGOV_SEED_ROLE:-aluno}
+
+      # Compatibilidade com o .env da v7
+      LAB_API_TOKEN: ${LAB_API_TOKEN:-}
+      LAB_ADMIN_TOKEN: ${LAB_ADMIN_TOKEN:-}
+      LAB_SEED_CPF: ${LAB_SEED_CPF:-}
+      LAB_SEED_NAME: ${LAB_SEED_NAME:-}
+
+    volumes:
+      - "./data:/data"
+
+    ports:
+      - "8089:8088"
+
+    restart: always
