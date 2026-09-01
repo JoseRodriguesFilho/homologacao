@@ -1,0 +1,128 @@
+name: Build e-GOV Login v11 Homolog
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main", "master" ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build Agent
+        shell: powershell
+        run: |
+          dotnet restore .\agent\eGOVLabCPFAgent.csproj
+          dotnet publish .\agent\eGOVLabCPFAgent.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            -o .\agent\publish
+
+          if (-not (Test-Path .\agent\publish\eGOVLabCPFAgent.exe)) {
+            throw "Agent EXE nao foi gerado."
+          }
+
+      - name: Prepare Credential Provider source
+        shell: powershell
+        run: |
+          Set-ExecutionPolicy -Scope Process Bypass -Force
+          .\credential-provider\scripts\prepare-source.ps1
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build Credential Provider Release x64
+        shell: powershell
+        run: |
+          msbuild `
+            .\credential-provider\generated\SampleV2CredentialProvider.vcxproj `
+            /m `
+            /t:Rebuild `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:PlatformToolset=v143
+
+      - name: Validate generated provider
+        shell: powershell
+        run: |
+          $cred = Get-Content .\credential-provider\generated\CSampleCredential.cpp -Raw
+          $prov = Get-Content .\credential-provider\generated\CSampleProvider.cpp -Raw
+          $support = Get-Content .\credential-provider\generated\LabSupport.cpp -Raw
+
+          $required = @(
+            "LabCpfExtractDigits",
+            "LabCpfCheckDigitsOk",
+            "LabPreviewIdentity",
+            "LabAuthorizeIdentity",
+            "LabReadLocalPassword",
+            "LabNotifyAgent",
+            "AlunoEGOV",
+            "AdminEGOV",
+            "CryptUnprotectData",
+            "WinHttpSendRequest"
+          )
+
+          $all = $cred + $prov + $support
+
+          foreach ($needle in $required) {
+            if (-not $all.Contains($needle)) {
+              throw "Validacao falhou: $needle"
+            }
+          }
+
+          if ($all.Contains("Lab@Teste2026!")) {
+            throw "Senha POC fixa encontrada."
+          }
+
+          if ($cred.Contains('wcscmp(normalizedCpf, L"')) {
+            throw "CPF fixo encontrado."
+          }
+
+      - name: Collect Windows artifact
+        shell: powershell
+        run: |
+          $dll = Get-ChildItem `
+            .\credential-provider\generated `
+            -Recurse `
+            -Filter "SampleV2CredentialProvider.dll" |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $dll) {
+            throw "DLL nao encontrada."
+          }
+
+          New-Item -ItemType Directory -Force .\artifact | Out-Null
+
+          Copy-Item $dll.FullName .\artifact\LabCPFProvider.dll -Force
+          Copy-Item .\agent\publish\eGOVLabCPFAgent.exe .\artifact\eGOVLabCPFAgent.exe -Force
+          Copy-Item .\credential-provider\installer\* .\artifact\ -Recurse -Force
+          Copy-Item .\README.md .\artifact\README.md -Force
+
+          $dllHash = (Get-FileHash .\artifact\LabCPFProvider.dll -Algorithm SHA256).Hash.ToLower()
+          $agentHash = (Get-FileHash .\artifact\eGOVLabCPFAgent.exe -Algorithm SHA256).Hash.ToLower()
+
+          @(
+            "$dllHash  LabCPFProvider.dll"
+            "$agentHash  eGOVLabCPFAgent.exe"
+          ) | Set-Content .\artifact\SHA256.txt
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: eGOV-Login-v11-HOMOLOG-Windows11Pro-x64
+          path: artifact/
+          if-no-files-found: error
+          retention-days: 30
