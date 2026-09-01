@@ -172,6 +172,21 @@ $x = $x.Replace(
     '*pdwAdjacentTo = SFI_PASSWORD;',
     '*pdwAdjacentTo = SFI_EDIT_TEXT;')
 
+# O sample da Microsoft guarda a selecao em _dwComboIndex. Garanta que
+# GetComboBoxValueCount devolva a selecao atual, em vez de sempre 0.
+$comboCountPattern = '(?s)(HRESULT CSampleCredential::GetComboBoxValueCount\(.*?\{.*?\*pcItems = ARRAYSIZE\(s_rgComboBoxStrings\);\s*)\*pdwSelectedItem = 0;'
+$x2 = [regex]::Replace(
+    $x,
+    $comboCountPattern,
+    '$1*pdwSelectedItem = _dwComboIndex;',
+    1)
+
+if ($x2 -eq $x) {
+    throw "GetComboBoxValueCount nao foi ajustado para _dwComboIndex."
+}
+
+$x = $x2
+
 # Limpa o campo que sera usado para mostrar o nome retornado pela API.
 $fullNamePattern = '(?s)    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszUserName;.*?    \}\s*(?=    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszDisplayName;)'
 
@@ -293,7 +308,7 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
         const bool adminTarget =
             LabIsAccount(_pszQualifiedUserName, L"AdminEGOV");
         const bool univesp =
-            !adminTarget && _dwComboBoxSelectedValue == 1;
+            !adminTarget && _dwComboIndex == 1;
 
         wchar_t normalized[33] = {};
         size_t digitCount = 0;
@@ -509,7 +524,7 @@ $authBlock = @'
     }
 
     const bool univesp =
-        !adminTarget && _dwComboBoxSelectedValue == 1;
+        !adminTarget && _dwComboIndex == 1;
 
     wchar_t normalizedIdentifier[33] = {};
     size_t identifierCount = 0;
@@ -685,7 +700,7 @@ foreach ($needle in $requiredCredential) {
 $cpfInputChecks = @(
     @{
         Name = "dropdown usa selecao UNIVESP"
-        Pattern = '_dwComboBoxSelectedValue\s*==\s*1'
+        Pattern = '_dwComboIndex\s*==\s*1'
     },
     @{
         Name = "CPF continua normalizado localmente"
