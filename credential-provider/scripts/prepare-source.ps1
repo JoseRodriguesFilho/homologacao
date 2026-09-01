@@ -295,7 +295,7 @@ $logonStatusPattern = '(?s)    if \(SUCCEEDED\(hr\)\)\s*\{\s*PWSTR pszLogonStatu
 $logonStatusReplacement = @'
     if (SUCCEEDED(hr))
     {
-        hr = SHStrDupW(L"Matrícula", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
+        hr = SHStrDupW(L"CPF", &_rgFieldStrings[SFI_LOGONSTATUS_TEXT]);
     }
 
 '@
@@ -909,5 +909,5 @@ if (-not $checkSupport.Contains('CryptUnprotectData')) {
 Write-Host ""
 Write-Host "e-GOV Login v11-homolog preparado." -ForegroundColor Green
 Write-Host "Tiles: Aluno e-GOV / Admin e-GOV" -ForegroundColor Green
-Write-Host "v11 homolog fix3: dropdown -> Escola de Governo=CPF (padrao) / UNIVESP=matricula" -ForegroundColor Green
+Write-Host "v11 fix5: Escola de Governo=CPF (padrao) / UNIVESP=matricula; ambos usam /auth/cpf" -ForegroundColor Green
 Write-Host "Senha: DPAPI LocalMachine (nao embutida na DLL)" -ForegroundColor Green

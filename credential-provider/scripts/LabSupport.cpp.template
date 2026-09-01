@@ -698,7 +698,7 @@ namespace
         std::string target =
             adminTarget ? "admin" : "student";
 
-        std::string institution = univesp ? "univesp" : "outros";
+        std::string institution = univesp ? "univesp" : "escola_governo";
         std::string identifierType = univesp ? "matricula" : "cpf";
 
         // Para CPF, envie também o campo legado "cpf". Assim a Escola de
@@ -1048,9 +1048,10 @@ LAB_AUTH_RESULT LabAuthorizeIdentity(
     bool adminTarget,
     LAB_AUTH_RESPONSE* response)
 {
-    // Escola de Governo/CPF usa a rota legada para manter compatibilidade
-    // com a API v10. UNIVESP/matricula usa a rota generica da v11.
-    PCWSTR authPath = univesp ? L"/auth/login" : L"/auth/cpf";
+    // A v11 preserva a rota /auth/cpf para os dois tipos de identificação.
+    // Assim não criamos uma segunda rota de autenticação e mantemos o
+    // Credential Provider compatível com a API atual evoluída.
+    PCWSTR authPath = L"/auth/cpf";
 
     LAB_AUTH_RESULT result = PostJson(
         authPath,
