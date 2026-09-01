@@ -878,13 +878,23 @@ if ($checkCredential.Contains('wcscmp(normalizedCpf, L"')) {
     throw "Validacao de CPF fixa encontrada."
 }
 
-$rewriteMatches = [regex]::Matches(
+# SetFieldString(SFI_EDIT_TEXT) e permitido ao trocar a instituicao, pois nesse
+# momento queremos limpar visualmente a identificacao anterior. O que nao pode
+# acontecer e reescrever o campo a cada tecla dentro de SetStringValue(), pois
+# o LogonUI reposiciona o cursor para o inicio.
+$setStringMatch = [regex]::Match(
     $checkCredential,
-    '(?s)SetFieldString\(\s*this,\s*SFI_EDIT_TEXT\s*,'
+    '(?s)HRESULT\s+CSampleCredential::SetStringValue\(.*?\n\}'
 )
 
-if ($rewriteMatches.Count -ne 0) {
-    throw "Validacao CPF falhou: o input nao deve ser reescrito, pois o LogonUI move o cursor para o inicio."
+if (-not $setStringMatch.Success) {
+    throw "Validacao CPF falhou: SetStringValue nao encontrado."
+}
+
+if ([regex]::IsMatch(
+        $setStringMatch.Value,
+        'SetFieldString\(\s*this,\s*SFI_EDIT_TEXT\s*,')) {
+    throw "Validacao CPF falhou: o input nao deve ser reescrito durante a digitacao, pois o LogonUI move o cursor para o inicio."
 }
 
 if (-not $checkProvider.Contains('L"AlunoEGOV"') -or
@@ -899,5 +909,5 @@ if (-not $checkSupport.Contains('CryptUnprotectData')) {
 Write-Host ""
 Write-Host "e-GOV Login v11-homolog preparado." -ForegroundColor Green
 Write-Host "Tiles: Aluno e-GOV / Admin e-GOV" -ForegroundColor Green
-Write-Host "v11 homolog fix2: dropdown Instituicao -> UNIVESP=matricula / Outras=CPF" -ForegroundColor Green
+Write-Host "v11 homolog fix3: dropdown Instituicao -> UNIVESP=matricula / Outras=CPF" -ForegroundColor Green
 Write-Host "Senha: DPAPI LocalMachine (nao embutida na DLL)" -ForegroundColor Green
