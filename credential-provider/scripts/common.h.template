@@ -15,7 +15,8 @@ enum SAMPLE_FIELD_ID
     SFI_LOGONSTATUS_TEXT  = 9,   // rótulo dinâmico: CPF/Matrícula
     SFI_EDIT_TEXT         = 10,  // identificação
     SFI_DISPLAYNAME_TEXT  = 11,  // nome/status retornado pela API
-    SFI_CHECKBOX          = 12,
+    SFI_COURSE_TEXT       = 12,  // curso, abaixo da saudação
+    SFI_CHECKBOX          = SFI_COURSE_TEXT, // alias exigido pelo sample original
     SFI_NUM_FIELDS        = 13,
 };
 
@@ -29,7 +30,7 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
 {
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_TILEIMAGE
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LABEL
-    { CPFS_DISPLAY_IN_BOTH,            CPFIS_NONE    }, // SFI_LARGE_TEXT
+    { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LARGE_TEXT (legado)
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_PASSWORD
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_SUBMIT_BUTTON
     { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_LAUNCHWINDOW_LINK
@@ -39,7 +40,7 @@ static const FIELD_STATE_PAIR s_rgFieldStatePairs[] =
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_LOGONSTATUS_TEXT = CPF/Matrícula
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_FOCUSED }, // SFI_EDIT_TEXT
     { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_DISPLAYNAME_TEXT
-    { CPFS_HIDDEN,                     CPFIS_NONE    }, // SFI_CHECKBOX
+    { CPFS_DISPLAY_IN_SELECTED_TILE,   CPFIS_NONE    }, // SFI_COURSE_TEXT
 };
 
 static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[] =
@@ -56,7 +57,7 @@ static const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_rgCredProvFieldDescriptors[]
     { SFI_LOGONSTATUS_TEXT,  CPFT_SMALL_TEXT,    L"CPF"                                     },
     { SFI_EDIT_TEXT,         CPFT_EDIT_TEXT,     L""                                              },
     { SFI_DISPLAYNAME_TEXT,  CPFT_SMALL_TEXT,    L""                                              },
-    { SFI_CHECKBOX,          CPFT_CHECKBOX,      L""                                              },
+    { SFI_COURSE_TEXT,       CPFT_SMALL_TEXT,    L""                                              },
 };
 
 static const PWSTR s_rgComboBoxStrings[] =

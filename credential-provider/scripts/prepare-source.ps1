@@ -168,6 +168,15 @@ $x = $x.Replace(
     'SHStrDupW(L"Submit", &_rgFieldStrings[SFI_SUBMIT_BUTTON])',
     'SHStrDupW(L"Entrar", &_rgFieldStrings[SFI_SUBMIT_BUTTON])')
 
+$checkboxNeedle = 'SHStrDupW(L"Checkbox", &_rgFieldStrings[SFI_CHECKBOX])'
+if (-not $x.Contains($checkboxNeedle)) {
+    throw "Inicializacao do campo Checkbox nao encontrada."
+}
+
+$x = $x.Replace(
+    $checkboxNeedle,
+    'SHStrDupW(L"", &_rgFieldStrings[SFI_COURSE_TEXT])')
+
 $x = $x.Replace(
     '*pdwAdjacentTo = SFI_PASSWORD;',
     '*pdwAdjacentTo = SFI_EDIT_TEXT;')
@@ -223,6 +232,7 @@ HRESULT CSampleCredential::SetComboBoxSelectedValue(DWORD dwFieldID, DWORD dwSel
             this, SFI_LOGONSTATUS_TEXT, univesp ? L"Matrícula" : L"CPF");
         _pCredProvCredentialEvents->SetFieldString(this, SFI_EDIT_TEXT, L"");
         _pCredProvCredentialEvents->SetFieldString(this, SFI_DISPLAYNAME_TEXT, L"");
+        _pCredProvCredentialEvents->SetFieldString(this, SFI_COURSE_TEXT, L"");
         _pCredProvCredentialEvents->SetFieldString(this, SFI_LARGE_TEXT, L"");
         _pCredProvCredentialEvents->SetFieldInteractiveState(
             this, SFI_EDIT_TEXT, CPFIS_FOCUSED);
@@ -364,9 +374,16 @@ $titleBlock = @'
         {
             CoTaskMemFree(_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
             _rgFieldStrings[SFI_DISPLAYNAME_TEXT] = nullptr;
-            hr = SHStrDupW(
-                maintenanceText.c_str(),
-                &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+            hr = SHStrDupW(L"Manutenção", &_rgFieldStrings[SFI_DISPLAYNAME_TEXT]);
+
+            if (SUCCEEDED(hr))
+            {
+                CoTaskMemFree(_rgFieldStrings[SFI_COURSE_TEXT]);
+                _rgFieldStrings[SFI_COURSE_TEXT] = nullptr;
+                hr = SHStrDupW(
+                    maintenanceText.c_str(),
+                    &_rgFieldStrings[SFI_COURSE_TEXT]);
+            }
         }
     }
 '@
@@ -506,6 +523,8 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                         this, SFI_LARGE_TEXT, adminTarget ? L"Admin e-GOV" : L"");
                     _pCredProvCredentialEvents->SetFieldString(
                         this, SFI_DISPLAYNAME_TEXT, hintText);
+                    _pCredProvCredentialEvents->SetFieldString(
+                        this, SFI_COURSE_TEXT, L"");
                 }
             }
             else if (changed)
@@ -522,10 +541,10 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                 {
                     if (preview.maintenance)
                     {
-                        courseLine = L"Manutenção";
-                        previewText = preview.maintenanceMessage.empty()
-                            ? preview.message.c_str()
-                            : preview.maintenanceMessage.c_str();
+                        previewText = L"Manutenção";
+                        courseLine = preview.maintenanceMessage.empty()
+                            ? preview.message
+                            : preview.maintenanceMessage;
                     }
                     else if (preview.allowed && !preview.name.empty())
                     {
@@ -556,8 +575,8 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                 _pCredProvCredentialEvents->SetFieldString(
                     this, SFI_DISPLAYNAME_TEXT, previewText);
                 _pCredProvCredentialEvents->SetFieldString(
-                    this, SFI_LARGE_TEXT,
-                    adminTarget ? L"Admin e-GOV" : courseLine.c_str());
+                    this, SFI_COURSE_TEXT,
+                    adminTarget ? L"" : courseLine.c_str());
             }
 
             _pCredProvCredentialEvents->EndFieldUpdates();
@@ -779,6 +798,19 @@ $checkCredential = Get-Content $credPath -Raw
 $checkProvider = Get-Content (Join-Path $out "CSampleProvider.cpp") -Raw
 $checkSupport = Get-Content (Join-Path $out "LabSupport.cpp") -Raw
 $checkSupportHeader = Get-Content (Join-Path $out "LabSupport.h") -Raw
+$checkCommon = Get-Content (Join-Path $out "common.h") -Raw
+
+$layoutChecks = @(
+    'SFI_DISPLAYNAME_TEXT  = 11',
+    'SFI_COURSE_TEXT       = 12',
+    '{ SFI_COURSE_TEXT,       CPFT_SMALL_TEXT'
+)
+
+foreach ($needle in $layoutChecks) {
+    if (-not $checkCommon.Contains($needle)) {
+        throw "Validacao de layout falhou em common.h: $needle"
+    }
+}
 
 # O valor de institution precisa ser fechado antes do campo legado cpf (ou do
 # campo computer no fluxo UNIVESP). Sem esta aspa a API recebe JSON malformado
