@@ -120,8 +120,25 @@ jobs:
           # isso, uma versao nova e valida seria recusada pelos hashes antigos.
           $verifyPath = .\artifact\00_VERIFICAR_PACOTE.ps1
           $verify = Get-Content $verifyPath -Raw
-          $verify = $verify -replace '(?m)^\$ExpectedDll\s*=\s*"[A-Fa-f0-9]+"', "`$ExpectedDll = `"$($dllHash.ToUpperInvariant())`""
-          $verify = $verify -replace '(?m)^\$ExpectedAgent\s*=\s*"[A-Fa-f0-9]+"', "`$ExpectedAgent = `"$($agentHash.ToUpperInvariant())`""
+          $expectedDllLine = '$ExpectedDll = "' + $dllHash.ToUpperInvariant() + '"'
+          $expectedAgentLine = '$ExpectedAgent = "' + $agentHash.ToUpperInvariant() + '"'
+
+          $verify = [regex]::Replace(
+            $verify,
+            '(?m)^\$ExpectedDll\s*=\s*"[A-Fa-f0-9]+"',
+            [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $expectedDllLine })
+          $verify = [regex]::Replace(
+            $verify,
+            '(?m)^\$ExpectedAgent\s*=\s*"[A-Fa-f0-9]+"',
+            [System.Text.RegularExpressions.MatchEvaluator]{ param($match) $expectedAgentLine })
+
+          if (-not $verify.Contains($expectedDllLine)) {
+            throw "Hash esperado da DLL nao foi gravado no verificador."
+          }
+          if (-not $verify.Contains($expectedAgentLine)) {
+            throw "Hash esperado do Agent nao foi gravado no verificador."
+          }
+
           Set-Content $verifyPath $verify -Encoding UTF8
 
           @(
