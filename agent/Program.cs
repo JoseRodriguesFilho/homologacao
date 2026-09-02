@@ -241,12 +241,21 @@ public sealed class AgentWorker : BackgroundService
                                     (session.TerminationDeadline.Value -
                                      DateTimeOffset.UtcNow).TotalSeconds));
 
-                            WindowsSessionInspector.TrySendMessage(
+                            var avisoExibido = WindowsSessionInspector.TrySendMessage(
                                 session.WindowsAccount,
-                                "e-GOV - Encerramento de sessao",
-                                session.TerminationMessage +
-                                $"\n\nEncerramento em {remaining} segundos.",
+                                "e-GOV - Laboratório ao Vivo",
+                                BuildTerminationNotice(
+                                    session.TerminationMessage,
+                                    remaining),
                                 remaining);
+
+                            if (!avisoExibido)
+                            {
+                                _logger.LogWarning(
+                                    "Nao foi possivel exibir o aviso de encerramento " +
+                                    "na sessao Windows de {Account}.",
+                                    session.WindowsAccount);
+                            }
 
                             lock (_sync)
                             {
@@ -256,7 +265,9 @@ public sealed class AgentWorker : BackgroundService
                                         StringComparison.OrdinalIgnoreCase));
                                 if (current is not null)
                                 {
-                                    current.TerminationNotified = true;
+                                    // Se a sessao ainda nao estava disponivel,
+                                    // tenta exibir novamente no proximo ciclo.
+                                    current.TerminationNotified = avisoExibido;
                                     SaveStateUnsafe();
                                 }
                             }
@@ -510,6 +521,23 @@ public sealed class AgentWorker : BackgroundService
         TerminationNotified = s.TerminationNotified
     };
 
+    private static string BuildTerminationNotice(string message, int secondsRemaining)
+    {
+        var detail = string.IsNullOrWhiteSpace(message)
+            ? "Sua sessão será encerrada pelo administrador."
+            : message.Trim();
+
+        var tempo = secondsRemaining == 1
+            ? "1 segundo"
+            : $"{Math.Max(0, secondsRemaining)} segundos";
+
+        return
+            "Sua sessão será desconectada pelo Laboratório ao Vivo.\r\n\r\n" +
+            detail +
+            $"\r\n\r\nTempo restante: {tempo}.\r\n" +
+            "Salve seu trabalho agora para não perder alterações.";
+    }
+
     private void LoadState()
     {
         try
@@ -636,6 +664,10 @@ public static class NetworkIdentity
 public static class WindowsSessionInspector
 {
     private static readonly IntPtr WtsCurrentServerHandle = IntPtr.Zero;
+    private const int MbOk = 0x00000000;
+    private const int MbIconWarning = 0x00000030;
+    private const int MbSetForeground = 0x00010000;
+    private const int MbTopMost = 0x00040000;
 
     public static bool IsUserLoggedOn(string expectedUser)
     {
@@ -695,7 +727,7 @@ public static class WindowsSessionInspector
             title.Length * sizeof(char),
             message,
             message.Length * sizeof(char),
-            0x00000000 | 0x00000030,
+            MbOk | MbIconWarning | MbSetForeground | MbTopMost,
             timeout,
             out _,
             false);
