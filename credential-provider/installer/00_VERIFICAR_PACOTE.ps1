@@ -19,7 +19,7 @@ $DllHash = (Get-FileHash $Dll -Algorithm SHA256).Hash.ToUpperInvariant()
 $AgentHash = (Get-FileHash $Agent -Algorithm SHA256).Hash.ToUpperInvariant()
 
 Write-Host ""
-Write-Host "Verificacao do pacote e-GOV v9.5" -ForegroundColor Cyan
+Write-Host "Verificacao do pacote e-GOV v11" -ForegroundColor Cyan
 Write-Host "DLL   : $DllHash"
 Write-Host "Agent : $AgentHash"
 Write-Host ""
