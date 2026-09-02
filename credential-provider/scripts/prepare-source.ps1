@@ -773,6 +773,40 @@ Set-Content $credPath $x -Encoding UTF8
 $checkCredential = Get-Content $credPath -Raw
 $checkProvider = Get-Content (Join-Path $out "CSampleProvider.cpp") -Raw
 $checkSupport = Get-Content (Join-Path $out "LabSupport.cpp") -Raw
+$checkSupportHeader = Get-Content (Join-Path $out "LabSupport.h") -Raw
+
+# O valor de institution precisa ser fechado antes do campo legado cpf (ou do
+# campo computer no fluxo UNIVESP). Sem esta aspa a API recebe JSON malformado
+# e o FastAPI responde 422 antes de entrar em /auth/preview ou /auth/cpf.
+$institutionJsonNeedle = '"\"" +'
+$institutionJsonStart = $checkSupport.IndexOf('"\",\"institution\":\"" + institution +')
+
+if ($institutionJsonStart -lt 0) {
+    throw "Validacao JSON falhou: campo institution nao encontrado em LabSupport.cpp."
+}
+
+$institutionJsonTail = $checkSupport.Substring(
+    $institutionJsonStart,
+    [Math]::Min(160, $checkSupport.Length - $institutionJsonStart))
+
+if (-not $institutionJsonTail.Contains($institutionJsonNeedle)) {
+    throw "Validacao JSON falhou: valor de institution nao foi fechado."
+}
+
+# As chamadas abaixo ficam em CSampleCredential.cpp, mas suas implementacoes
+# ficam em LabSupport.cpp. Sem as declaracoes no header o prepare-source termina
+# normalmente e o erro aparece somente depois, no MSBuild (C3861).
+$requiredSupportHeader = @(
+    'LabMatriculaExtractDigits(',
+    'LabPreviewIdentity(',
+    'LabAuthorizeIdentity('
+)
+
+foreach ($needle in $requiredSupportHeader) {
+    if (-not $checkSupportHeader.Contains($needle)) {
+        throw "Validacao estrutural falhou em LabSupport.h: $needle"
+    }
+}
 
 $requiredCredential = @(
     'LabCpfExtractDigits(',

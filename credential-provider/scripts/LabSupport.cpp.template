@@ -713,6 +713,7 @@ namespace
             EscapeJson(cpfUtf8) +
             "\",\"identifier_type\":\"" + identifierType +
             "\",\"institution\":\"" + institution +
+            "\"" +
             legacyCpf +
             ",\"computer\":\"" +
             EscapeJson(computerUtf8) +
@@ -1003,12 +1004,9 @@ bool LabMatriculaExtractDigits(
                 ++(*excessDigits);
             }
         }
-        else if (*p == L' ' || *p == L'-' || *p == L'.')
-        {
-            // separadores comuns sao ignorados na homologacao
-        }
         else
         {
+            // Matricula UNIVESP e estritamente numerica, sem mascara.
             *invalidChars = true;
         }
     }

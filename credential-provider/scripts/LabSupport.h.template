@@ -69,15 +69,17 @@ bool LabCpfExtractDigits(
     _Out_ bool* invalidChars,
     _Out_ size_t* excessDigits);
 
-// Espelha valid_cpf da API (app/main.py): exige 11 digitos, rejeita
-// sequencias de digitos iguais e confere os dois digitos verificadores.
-bool LabCpfCheckDigitsOk(
-    _In_opt_z_ PCWSTR digits11);
-
-// Matricula UNIVESP da homologacao: somente digitos, 3..32 caracteres.
+// Extrai ate 32 digitos da matricula UNIVESP. O buffer precisa comportar os
+// 32 digitos e o terminador NUL (wchar_t[33]). A matricula nao usa a validacao
+// matematica de CPF.
 bool LabMatriculaExtractDigits(
     _In_opt_z_ PCWSTR input,
     _Out_writes_z_(33) wchar_t* digits32,
     _Out_ size_t* digitCount,
     _Out_ bool* invalidChars,
     _Out_ size_t* excessDigits);
+
+// Espelha valid_cpf da API (app/main.py): exige 11 digitos, rejeita
+// sequencias de digitos iguais e confere os dois digitos verificadores.
+bool LabCpfCheckDigitsOk(
+    _In_opt_z_ PCWSTR digits11);
