@@ -536,7 +536,12 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                             courseLine = L"Curso: " + preview.course;
                         }
                     }
-                    else if (!preview.message.empty())
+                    // Matricula tem comprimento variavel. Enquanto o usuario
+                    // digita, um prefixo ainda incompleto naturalmente nao
+                    // existe no banco. Mostra apenas reconhecimento positivo;
+                    // a recusa completa continua aparecendo ao pressionar Entrar.
+                    else if (!preview.message.empty() &&
+                             !(univesp && preview.reason == L"nao_cadastrado"))
                     {
                         previewText = preview.message.c_str();
                     }
@@ -813,6 +818,7 @@ $requiredCredential = @(
     'LabCpfCheckDigitsOk(',
     'LabPreviewIdentity(',
     'LabAuthorizeIdentity(',
+    'preview.reason == L"nao_cadastrado"',
     'LabReadLocalPassword(',
     'LabNotifyAgent(',
     'L"AdminEGOV"',
