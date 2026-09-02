@@ -1,4 +1,4 @@
-name: Build e-GOV Login v11 Homolog
+name: Build e-GOV Login v11
 
 on:
   workflow_dispatch:
@@ -64,10 +64,12 @@ jobs:
           $required = @(
             "LabCpfExtractDigits",
             "LabCpfCheckDigitsOk",
+            "LabMatriculaExtractDigits",
             "LabPreviewIdentity",
             "LabAuthorizeIdentity",
             "LabReadLocalPassword",
             "LabNotifyAgent",
+            "SFI_COURSE_TEXT",
             "AlunoEGOV",
             "AdminEGOV",
             "CryptUnprotectData",
@@ -114,6 +116,14 @@ jobs:
           $dllHash = (Get-FileHash .\artifact\LabCPFProvider.dll -Algorithm SHA256).Hash.ToLower()
           $agentHash = (Get-FileHash .\artifact\eGOVLabCPFAgent.exe -Algorithm SHA256).Hash.ToLower()
 
+          # O verificador acompanha exatamente os binarios deste build. Sem
+          # isso, uma versao nova e valida seria recusada pelos hashes antigos.
+          $verifyPath = .\artifact\00_VERIFICAR_PACOTE.ps1
+          $verify = Get-Content $verifyPath -Raw
+          $verify = $verify -replace '(?m)^\$ExpectedDll\s*=\s*"[A-Fa-f0-9]+"', "`$ExpectedDll = `"$($dllHash.ToUpperInvariant())`""
+          $verify = $verify -replace '(?m)^\$ExpectedAgent\s*=\s*"[A-Fa-f0-9]+"', "`$ExpectedAgent = `"$($agentHash.ToUpperInvariant())`""
+          Set-Content $verifyPath $verify -Encoding UTF8
+
           @(
             "$dllHash  LabCPFProvider.dll"
             "$agentHash  eGOVLabCPFAgent.exe"
@@ -122,7 +132,7 @@ jobs:
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: eGOV-Login-v11-HOMOLOG-Windows11Pro-x64
+          name: eGOV-Login-v11-Windows11Pro-x64
           path: artifact/
           if-no-files-found: error
           retention-days: 30
