@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http;
 using System.IO.Pipes;
 using System.Net.Http.Json;
 using System.Net.NetworkInformation;
@@ -79,7 +80,7 @@ public sealed class HeartbeatResponse
 public sealed class AgentWorker : BackgroundService
 {
     private const string PipeName = "eGOVLabCPFAgent";
-    private const int MinimumTerminationNoticeSeconds = 15;
+    internal const int MinimumTerminationNoticeSeconds = 15;
     private readonly ILogger<AgentWorker> _logger;
     private readonly HttpClient _http;
     private readonly object _sync = new();
@@ -770,16 +771,17 @@ public static class WindowsSessionInspector
         if (!TryFindSessionId(expectedUser, out var sessionId))
             return false;
 
-        var timeout = Math.Max(5, Math.Min(secondsRemaining, 300));
+        var popupDuration = Math.Max(5, secondsRemaining);
 
-        if (TryStartCustomNotice(sessionId, message, timeout))
+        if (TryStartCustomNotice(sessionId, message, popupDuration))
             return true;
 
         // Contingencia para computadores onde a criacao do processo grafico
         // na sessao do usuario seja bloqueada por alguma politica do Windows.
+        var timeout = Math.Min(popupDuration, 300);
         var nativeMessage =
             message +
-            $"\r\n\r\nTempo restante: aproximadamente {timeout} segundos.";
+            "\r\n\r\n" + FormatNoticeDuration(popupDuration);
 
         return WTSSendMessageW(
             WtsCurrentServerHandle,
@@ -792,6 +794,17 @@ public static class WindowsSessionInspector
             timeout,
             out _,
             false);
+    }
+
+    internal static string FormatNoticeDuration(int seconds)
+    {
+        if (seconds <= AgentWorker.MinimumTerminationNoticeSeconds)
+            return "Tempo para encerramento: menos de 1 minuto.";
+
+        var minutes = (int)Math.Ceiling(seconds / 60d);
+        return minutes == 1
+            ? "Tempo para encerramento: 1 minuto."
+            : $"Tempo para encerramento: {minutes} minutos.";
     }
 
     private static bool TryStartCustomNotice(
@@ -1154,8 +1167,6 @@ public static class TerminationNoticeWindow
     {
         var blue = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
         var white = Brushes.White;
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(seconds);
-
         var window = new Window
         {
             Title = "e-GOV - Laboratório ao Vivo",
@@ -1192,15 +1203,16 @@ public static class TerminationNoticeWindow
         };
         Grid.SetRow(messageBlock, 0);
 
-        var countdown = new TextBlock
+        var duration = new TextBlock
         {
+            Text = WindowsSessionInspector.FormatNoticeDuration(seconds),
             FontSize = 18,
             FontWeight = FontWeights.SemiBold,
             Foreground = white,
             HorizontalAlignment = HorizontalAlignment.Left,
             Margin = new Thickness(100, 0, 100, 30)
         };
-        Grid.SetRow(countdown, 1);
+        Grid.SetRow(duration, 1);
 
         var okButton = new Button
         {
@@ -1221,35 +1233,22 @@ public static class TerminationNoticeWindow
         Grid.SetRow(okButton, 2);
 
         panel.Children.Add(messageBlock);
-        panel.Children.Add(countdown);
+        panel.Children.Add(duration);
         panel.Children.Add(okButton);
         window.Content = panel;
 
         var timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromSeconds(1)
+            Interval = TimeSpan.FromSeconds(seconds)
         };
 
-        void UpdateCountdown()
+        timer.Tick += (_, _) =>
         {
-            var remaining = Math.Max(
-                0,
-                (int)Math.Ceiling((deadline - DateTimeOffset.UtcNow).TotalSeconds));
-            countdown.Text = remaining == 1
-                ? "Encerramento em 1 segundo"
-                : $"Encerramento em {remaining} segundos";
-
-            if (remaining == 0)
-            {
-                timer.Stop();
-                window.Close();
-            }
-        }
-
-        timer.Tick += (_, _) => UpdateCountdown();
+            timer.Stop();
+            window.Close();
+        };
         window.Loaded += (_, _) =>
         {
-            UpdateCountdown();
             timer.Start();
             window.Activate();
             okButton.Focus();
