@@ -4,7 +4,12 @@ using System.Net.Http.Json;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using System.Windows.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -275,8 +280,7 @@ public sealed class AgentWorker : BackgroundService
                                 session.WindowsAccount,
                                 "e-GOV - Laboratório ao Vivo",
                                 BuildTerminationNotice(
-                                    session.TerminationMessage,
-                                    remaining),
+                                    session.TerminationMessage),
                                 remaining);
 
                             if (!avisoExibido)
@@ -569,20 +573,16 @@ public sealed class AgentWorker : BackgroundService
         TerminationNotified = s.TerminationNotified
     };
 
-    private static string BuildTerminationNotice(string message, int secondsRemaining)
+    private static string BuildTerminationNotice(string message)
     {
         var detail = string.IsNullOrWhiteSpace(message)
             ? "Sua sessão será encerrada pelo administrador."
             : message.Trim();
 
-        var tempo = secondsRemaining == 1
-            ? "1 segundo"
-            : $"{Math.Max(0, secondsRemaining)} segundos";
-
         return
             "Sua sessão será desconectada em breve.\r\n\r\n" +
             detail +
-            $"\r\n\r\nTempo restante: {tempo}.\r\n" +
+            "\r\n\r\n" +
             "Salve seu trabalho agora para não perder alterações.";
     }
 
@@ -716,6 +716,9 @@ public static class WindowsSessionInspector
     private const int MbIconWarning = 0x00000030;
     private const int MbSetForeground = 0x00010000;
     private const int MbTopMost = 0x00040000;
+    private const uint LogonWithProfile = 0x00000001;
+    private const uint CreateNewProcessGroup = 0x00000200;
+    private const uint CreateUnicodeEnvironment = 0x00000400;
 
     public static bool IsUserLoggedOn(string expectedUser)
     {
@@ -768,17 +771,106 @@ public static class WindowsSessionInspector
             return false;
 
         var timeout = Math.Max(5, Math.Min(secondsRemaining, 300));
+
+        if (TryStartCustomNotice(sessionId, message, timeout))
+            return true;
+
+        // Contingencia para computadores onde a criacao do processo grafico
+        // na sessao do usuario seja bloqueada por alguma politica do Windows.
+        var nativeMessage =
+            message +
+            $"\r\n\r\nTempo restante: aproximadamente {timeout} segundos.";
+
         return WTSSendMessageW(
             WtsCurrentServerHandle,
             sessionId,
             title,
             title.Length * sizeof(char),
-            message,
-            message.Length * sizeof(char),
+            nativeMessage,
+            nativeMessage.Length * sizeof(char),
             MbOk | MbIconWarning | MbSetForeground | MbTopMost,
             timeout,
             out _,
             false);
+    }
+
+    private static bool TryStartCustomNotice(
+        int sessionId,
+        string message,
+        int timeoutSeconds)
+    {
+        var executable = Environment.ProcessPath;
+        if (string.IsNullOrWhiteSpace(executable))
+            return false;
+
+        if (!WTSQueryUserToken((uint)sessionId, out var userToken))
+            return false;
+
+        IntPtr environment = IntPtr.Zero;
+
+        try
+        {
+            var environmentCreated =
+                CreateEnvironmentBlock(out environment, userToken, false);
+            var creationFlags = CreateNewProcessGroup;
+
+            if (environmentCreated)
+                creationFlags |= CreateUnicodeEnvironment;
+
+            var encodedMessage = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes(message));
+            var commandText =
+                $"\"{executable}\" --termination-notice {encodedMessage} " +
+                timeoutSeconds;
+            var commandLine = new StringBuilder(commandText);
+            var startupInfo = new STARTUPINFO
+            {
+                cb = Marshal.SizeOf<STARTUPINFO>(),
+                lpDesktop = @"winsta0\default"
+            };
+
+            var started = CreateProcessAsUserW(
+                    userToken,
+                    executable,
+                    commandLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    false,
+                    creationFlags,
+                    environmentCreated ? environment : IntPtr.Zero,
+                    Path.GetDirectoryName(executable),
+                    ref startupInfo,
+                    out var processInfo);
+
+            if (!started)
+            {
+                commandLine = new StringBuilder(commandText);
+                started = CreateProcessWithTokenW(
+                    userToken,
+                    LogonWithProfile,
+                    executable,
+                    commandLine,
+                    creationFlags,
+                    environmentCreated ? environment : IntPtr.Zero,
+                    Path.GetDirectoryName(executable),
+                    ref startupInfo,
+                    out processInfo);
+            }
+
+            if (!started)
+                return false;
+
+            CloseHandle(processInfo.hThread);
+            CloseHandle(processInfo.hProcess);
+            return true;
+        }
+        finally
+        {
+            if (environment != IntPtr.Zero)
+                DestroyEnvironmentBlock(environment);
+
+            CloseHandle(userToken);
+        }
     }
 
     public static bool TryLogoff(string expectedUser)
@@ -870,6 +962,38 @@ public static class WindowsSessionInspector
         public WTS_CONNECTSTATE_CLASS State;
     }
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string? lpReserved;
+        public string? lpDesktop;
+        public string? lpTitle;
+        public int dwX;
+        public int dwY;
+        public int dwXSize;
+        public int dwYSize;
+        public int dwXCountChars;
+        public int dwYCountChars;
+        public int dwFillAttribute;
+        public int dwFlags;
+        public short wShowWindow;
+        public short cbReserved2;
+        public IntPtr lpReserved2;
+        public IntPtr hStdInput;
+        public IntPtr hStdOutput;
+        public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess;
+        public IntPtr hThread;
+        public int dwProcessId;
+        public int dwThreadId;
+    }
+
     private enum WTS_CONNECTSTATE_CLASS
     {
         WTSActive,
@@ -932,12 +1056,216 @@ public static class WindowsSessionInspector
         IntPtr server,
         int sessionId,
         bool wait);
+
+    [DllImport("Wtsapi32.dll", SetLastError = true)]
+    private static extern bool WTSQueryUserToken(
+        uint sessionId,
+        out IntPtr token);
+
+    [DllImport("userenv.dll", SetLastError = true)]
+    private static extern bool CreateEnvironmentBlock(
+        out IntPtr environment,
+        IntPtr token,
+        bool inherit);
+
+    [DllImport("userenv.dll", SetLastError = true)]
+    private static extern bool DestroyEnvironmentBlock(IntPtr environment);
+
+    [DllImport(
+        "advapi32.dll",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    private static extern bool CreateProcessAsUserW(
+        IntPtr token,
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string? currentDirectory,
+        ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport(
+        "advapi32.dll",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    private static extern bool CreateProcessWithTokenW(
+        IntPtr token,
+        uint logonFlags,
+        string applicationName,
+        StringBuilder commandLine,
+        uint creationFlags,
+        IntPtr environment,
+        string? currentDirectory,
+        ref STARTUPINFO startupInfo,
+        out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+}
+
+public static class TerminationNoticeWindow
+{
+    private const string NoticeArgument = "--termination-notice";
+
+    public static bool RunIfRequested(string[] args)
+    {
+        if (args.Length == 0 ||
+            !args[0].Equals(NoticeArgument, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var message = DecodeMessage(args.ElementAtOrDefault(1));
+        var seconds = int.TryParse(args.ElementAtOrDefault(2), out var parsed)
+            ? Math.Max(1, parsed)
+            : 15;
+
+        var uiThread = new Thread(() => Show(message, seconds))
+        {
+            IsBackground = false,
+            Name = "e-GOV termination notice"
+        };
+        uiThread.SetApartmentState(ApartmentState.STA);
+        uiThread.Start();
+        uiThread.Join();
+        return true;
+    }
+
+    private static string DecodeMessage(string? encoded)
+    {
+        if (string.IsNullOrWhiteSpace(encoded))
+            return "Sua sessão será encerrada pelo administrador.";
+
+        try
+        {
+            return Encoding.UTF8.GetString(Convert.FromBase64String(encoded));
+        }
+        catch (FormatException)
+        {
+            return "Sua sessão será encerrada pelo administrador.";
+        }
+    }
+
+    private static void Show(string message, int seconds)
+    {
+        var blue = new SolidColorBrush(Color.FromRgb(0x00, 0x66, 0xCC));
+        var white = Brushes.White;
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(seconds);
+
+        var window = new Window
+        {
+            Title = "e-GOV - Laboratório ao Vivo",
+            Background = blue,
+            Foreground = white,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterScreen,
+            SizeToContent = SizeToContent.WidthAndHeight,
+            WindowStyle = WindowStyle.None,
+            Padding = new Thickness(20),
+            Topmost = true,
+            ShowActivated = true,
+            ShowInTaskbar = true
+        };
+
+        var panel = new Grid
+        {
+            MinWidth = 760,
+            MaxWidth = 1040,
+            Background = blue
+        };
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        panel.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var messageBlock = new TextBlock
+        {
+            Text = message,
+            FontSize = 36,
+            Foreground = white,
+            TextWrapping = TextWrapping.Wrap,
+            MaxWidth = 880,
+            Margin = new Thickness(100, 60, 100, 30)
+        };
+        Grid.SetRow(messageBlock, 0);
+
+        var countdown = new TextBlock
+        {
+            FontSize = 18,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = white,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(100, 0, 100, 30)
+        };
+        Grid.SetRow(countdown, 1);
+
+        var okButton = new Button
+        {
+            Content = "OK",
+            Width = 75,
+            Padding = new Thickness(12, 6, 12, 6),
+            Background = blue,
+            BorderBrush = white,
+            BorderThickness = new Thickness(1),
+            Foreground = white,
+            FontSize = 16,
+            IsDefault = true,
+            IsCancel = true,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 0, 30, 20)
+        };
+        okButton.Click += (_, _) => window.Close();
+        Grid.SetRow(okButton, 2);
+
+        panel.Children.Add(messageBlock);
+        panel.Children.Add(countdown);
+        panel.Children.Add(okButton);
+        window.Content = panel;
+
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(1)
+        };
+
+        void UpdateCountdown()
+        {
+            var remaining = Math.Max(
+                0,
+                (int)Math.Ceiling((deadline - DateTimeOffset.UtcNow).TotalSeconds));
+            countdown.Text = remaining == 1
+                ? "Encerramento em 1 segundo"
+                : $"Encerramento em {remaining} segundos";
+
+            if (remaining == 0)
+            {
+                timer.Stop();
+                window.Close();
+            }
+        }
+
+        timer.Tick += (_, _) => UpdateCountdown();
+        window.Loaded += (_, _) =>
+        {
+            UpdateCountdown();
+            timer.Start();
+            window.Activate();
+            okButton.Focus();
+        };
+        window.Closed += (_, _) => timer.Stop();
+        window.ShowDialog();
+    }
 }
 
 public static class Program
 {
     public static async Task Main(string[] args)
     {
+        if (TerminationNoticeWindow.RunIfRequested(args))
+            return;
+
         var builder = Host.CreateApplicationBuilder(args);
 
         builder.Services.AddWindowsService(options =>
