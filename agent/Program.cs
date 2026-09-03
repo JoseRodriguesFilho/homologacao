@@ -57,6 +57,7 @@ public sealed class SessionContext
     public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
     public DateTimeOffset LastHeartbeat { get; set; } = DateTimeOffset.MinValue;
     public DateTimeOffset? TerminationDeadline { get; set; }
+    public DateTimeOffset? TerminationLogoffNotBefore { get; set; }
     public string TerminationMessage { get; set; } = "";
     public bool TerminationNotified { get; set; }
 }
@@ -73,6 +74,7 @@ public sealed class HeartbeatResponse
 public sealed class AgentWorker : BackgroundService
 {
     private const string PipeName = "eGOVLabCPFAgent";
+    private const int MinimumTerminationNoticeSeconds = 15;
     private readonly ILogger<AgentWorker> _logger;
     private readonly HttpClient _http;
     private readonly object _sync = new();
@@ -203,8 +205,10 @@ public sealed class AgentWorker : BackgroundService
                         .ToList();
                 }
 
-                foreach (var session in snapshot)
+                foreach (var snapshotSession in snapshot)
                 {
+                    var session = snapshotSession;
+
                     if (session.TerminationDeadline is not null)
                     {
                         if (DateTimeOffset.UtcNow < session.TerminationDeadline.Value &&
@@ -223,23 +227,49 @@ public sealed class AgentWorker : BackgroundService
                                     if (current is not null)
                                     {
                                         current.LastHeartbeat = DateTimeOffset.UtcNow;
+                                        session = Clone(current);
                                         SaveStateUnsafe();
                                     }
                                 }
                             }
 
-                            // Usa o estado atualizado no proximo ciclo, inclusive
-                            // quando o administrador cancelou o encerramento.
-                            continue;
+                            // O heartbeat pode cancelar ou atualizar o comando. Usa o
+                            // estado novo neste mesmo ciclo para nao atrasar o aviso.
+                            if (session.TerminationDeadline is null)
+                                continue;
+                        }
+
+                        var now = DateTimeOffset.UtcNow;
+                        var effectiveDeadline = session.TerminationDeadline.Value;
+
+                        if (session.TerminationLogoffNotBefore is not null &&
+                            session.TerminationLogoffNotBefore.Value > effectiveDeadline)
+                        {
+                            effectiveDeadline =
+                                session.TerminationLogoffNotBefore.Value;
                         }
 
                         if (!session.TerminationNotified)
                         {
+                            // Estados gravados por versoes anteriores nao possuem este
+                            // campo. Ainda assim garante tempo minimo para leitura.
+                            if (session.TerminationLogoffNotBefore is null)
+                            {
+                                session.TerminationLogoffNotBefore =
+                                    now.AddSeconds(MinimumTerminationNoticeSeconds);
+
+                                if (session.TerminationLogoffNotBefore.Value >
+                                    effectiveDeadline)
+                                {
+                                    effectiveDeadline =
+                                        session.TerminationLogoffNotBefore.Value;
+                                }
+                            }
+
                             var remaining = Math.Max(
-                                0,
+                                1,
                                 (int)Math.Ceiling(
-                                    (session.TerminationDeadline.Value -
-                                     DateTimeOffset.UtcNow).TotalSeconds));
+                                    (effectiveDeadline - now).TotalSeconds));
 
                             var avisoExibido = WindowsSessionInspector.TrySendMessage(
                                 session.WindowsAccount,
@@ -256,6 +286,14 @@ public sealed class AgentWorker : BackgroundService
                                     "na sessao Windows de {Account}.",
                                     session.WindowsAccount);
                             }
+                            else
+                            {
+                                _logger.LogInformation(
+                                    "Aviso de encerramento exibido para {Account}; " +
+                                    "logoff em aproximadamente {Seconds} segundos.",
+                                    session.WindowsAccount,
+                                    remaining);
+                            }
 
                             lock (_sync)
                             {
@@ -268,12 +306,14 @@ public sealed class AgentWorker : BackgroundService
                                     // Se a sessao ainda nao estava disponivel,
                                     // tenta exibir novamente no proximo ciclo.
                                     current.TerminationNotified = avisoExibido;
+                                    current.TerminationLogoffNotBefore =
+                                        session.TerminationLogoffNotBefore;
                                     SaveStateUnsafe();
                                 }
                             }
                         }
 
-                        if (DateTimeOffset.UtcNow >= session.TerminationDeadline.Value)
+                        if (DateTimeOffset.UtcNow >= effectiveDeadline)
                         {
                             if (WindowsSessionInspector.TryLogoff(
                                     session.WindowsAccount))
@@ -284,8 +324,9 @@ public sealed class AgentWorker : BackgroundService
                                     token);
                                 RemoveSession(session.SessionId);
                             }
-                            continue;
                         }
+
+                        continue;
                     }
 
                     if (!WindowsSessionInspector.IsUserLoggedOn(session.WindowsAccount))
@@ -412,11 +453,17 @@ public sealed class AgentWorker : BackgroundService
                                 "Sua sessao sera encerrada pelo administrador.";
 
                             if (changed)
+                            {
                                 current.TerminationNotified = false;
+                                current.TerminationLogoffNotBefore =
+                                    DateTimeOffset.UtcNow.AddSeconds(
+                                        MinimumTerminationNoticeSeconds);
+                            }
                         }
                         else
                         {
                             current.TerminationDeadline = null;
+                            current.TerminationLogoffNotBefore = null;
                             current.TerminationMessage = "";
                             current.TerminationNotified = false;
                         }
@@ -517,6 +564,7 @@ public sealed class AgentWorker : BackgroundService
         AddedAt = s.AddedAt,
         LastHeartbeat = s.LastHeartbeat,
         TerminationDeadline = s.TerminationDeadline,
+        TerminationLogoffNotBefore = s.TerminationLogoffNotBefore,
         TerminationMessage = s.TerminationMessage,
         TerminationNotified = s.TerminationNotified
     };
@@ -532,7 +580,7 @@ public sealed class AgentWorker : BackgroundService
             : $"{Math.Max(0, secondsRemaining)} segundos";
 
         return
-            "Sua sessão será desconectada pelo Laboratório ao Vivo.\r\n\r\n" +
+            "Sua sessão será desconectada em breve.\r\n\r\n" +
             detail +
             $"\r\n\r\nTempo restante: {tempo}.\r\n" +
             "Salve seu trabalho agora para não perder alterações.";
