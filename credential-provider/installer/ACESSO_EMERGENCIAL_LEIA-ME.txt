@@ -1,0 +1,43 @@
+ACESSO EMERGENCIAL e-GOV - ALUNO
+
+Objetivo
+Permitir uma aula quando a API ou a rede local estiver indisponivel, sem
+colocar CPF, matricula ou senha fixa dentro da DLL.
+
+Configurar ou trocar o codigo
+1. Execute 11_CONFIGURAR_ACESSO_EMERGENCIAL.cmd como Administrador.
+2. Informe e confirme um codigo de exatamente 12 numeros.
+   O configurador rejeita codigos cujos 11 primeiros numeros formem um CPF.
+3. Defina a validade, o nome e o curso que aparecerao no login.
+4. Execute 13_TESTAR_ACESSO_EMERGENCIAL.cmd.
+
+Usar
+1. Abra o tile Aluno e-GOV.
+2. Mantenha a instituicao Escola de Governo selecionada.
+3. Digite o codigo de 12 numeros e pressione Entrar.
+
+O Credential Provider faz tres verificacoes. O codigo somente e aceito se as
+tres falharem por rede ainda sem IPv4, servidor inalcançavel ou HTTP 5xx.
+Qualquer resposta normal da API, manutencao, recusa, 401/403 ou erro de
+certificado mantem a contingencia bloqueada.
+
+Desativar imediatamente
+Execute 12_DESATIVAR_ACESSO_EMERGENCIAL.cmd. O segredo protegido e removido.
+Nao e necessario recompilar nem reinstalar a DLL.
+
+Seguranca
+- Funciona apenas no AlunoEGOV; nunca no AdminEGOV.
+- Nao funciona na opcao UNIVESP, evitando colisao com uma matricula numerica.
+- O codigo fica em HKLM como REG_BINARY protegido por DPAPI LocalMachine.
+- A chave permite acesso somente a SYSTEM e Administradores.
+- A validade e obrigatoria e pode variar de 1 a 365 dias.
+- O log %ProgramData%\e-GOV\LabCPF\offline-access.log registra o uso sem o codigo.
+- Execute a configuracao em cada computador; um blob DPAPI nao deve ser copiado
+  de uma maquina para outra.
+
+Teste piloto recomendado
+1. Configure em apenas um computador de laboratorio, com validade curta.
+2. Com a API ativa, confirme que o codigo e recusado.
+3. Isole somente esse computador da API/rede local e confirme o login.
+4. Reative a conexao e confirme que CPF e matricula continuam normais.
+5. Desative o acesso emergencial e confirme que o codigo deixa de funcionar.
