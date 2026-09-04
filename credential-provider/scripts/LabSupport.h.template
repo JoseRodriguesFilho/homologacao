@@ -7,9 +7,18 @@ enum LAB_AUTH_RESULT
 {
     LAB_AUTH_OK = 0,
     LAB_AUTH_DENIED,
+    LAB_AUTH_NETWORK_NOT_READY,
+    LAB_AUTH_API_UNREACHABLE,
     LAB_AUTH_SERVICE_UNAVAILABLE,
     LAB_AUTH_NOT_CONFIGURED,
     LAB_AUTH_CLIENT_UNAUTHORIZED
+};
+
+enum LAB_EMERGENCY_RESULT
+{
+    LAB_EMERGENCY_NOT_APPLICABLE = 0,
+    LAB_EMERGENCY_AUTHORIZED,
+    LAB_EMERGENCY_REJECTED
 };
 
 struct LAB_AUTH_RESPONSE
@@ -44,6 +53,15 @@ LAB_AUTH_RESULT LabAuthorizeIdentity(
     bool univesp,
     bool adminTarget,
     _Out_ LAB_AUTH_RESPONSE* response);
+
+LAB_EMERGENCY_RESULT LabTryEmergencyAccess(
+    _In_opt_z_ PCWSTR input,
+    bool adminTarget,
+    bool univesp,
+    _Out_ LAB_AUTH_RESPONSE* response);
+
+bool LabEmergencyCodeShapeOk(
+    _In_opt_z_ PCWSTR input);
 
 bool LabReadLocalPassword(
     bool adminTarget,

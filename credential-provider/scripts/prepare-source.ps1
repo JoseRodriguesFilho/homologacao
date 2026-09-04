@@ -435,7 +435,13 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                 pwz, normalized, &digitCount, &invalidChars, &excessDigits);
         }
 
-        const bool invalidInput = invalidChars || excessDigits > 0;
+        // O codigo de contingencia tem 12 digitos e usa somente a opcao
+        // Escola de Governo. Isso evita colisao com matriculas UNIVESP, que
+        // possuem comprimento variavel.
+        const bool emergencyInput =
+            !adminTarget && !univesp && LabEmergencyCodeShapeOk(pwz);
+        const bool invalidInput =
+            (invalidChars || excessDigits > 0) && !emergencyInput;
         _fCpfInvalidChars = invalidInput;
 
         wchar_t previous[33] = {};
@@ -444,7 +450,9 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
             StringCchCopyW(previous, ARRAYSIZE(previous), _rgFieldStrings[SFI_EDIT_TEXT]);
         }
 
-        PCWSTR validated = invalidInput ? L"" : normalized;
+        PCWSTR validated = emergencyInput
+            ? pwz
+            : (invalidInput ? L"" : normalized);
         const bool changed = wcscmp(previous, validated) != 0;
 
         PWSTR* stored = &_rgFieldStrings[SFI_EDIT_TEXT];
@@ -487,17 +495,25 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
             }
             formatted[outPos] = L'\0';
 
-            if (digitCount > 0)
+            if (emergencyInput)
+            {
+                StringCchCopyW(
+                    formattedLine, ARRAYSIZE(formattedLine), L"Acesso emergencial");
+            }
+            else if (digitCount > 0)
             {
                 StringCchPrintfW(
                     formattedLine, ARRAYSIZE(formattedLine), L"CPF: %s", formatted);
             }
 
             const bool checkDigitsOk =
-                !invalidInput && digitCount == 11 && LabCpfCheckDigitsOk(normalized);
-            inputComplete = checkDigitsOk;
+                !emergencyInput && !invalidInput &&
+                digitCount == 11 && LabCpfCheckDigitsOk(normalized);
+            inputComplete = !emergencyInput && checkDigitsOk;
 
-            if (invalidChars)
+            if (emergencyInput)
+                hintText = L"Código de contingência informado. Pressione Entrar.";
+            else if (invalidChars)
                 hintText = L"Digite apenas números. Pontos e traços são opcionais.";
             else if (excessDigits > 0 || (digitCount == 11 && !checkDigitsOk))
                 hintText = L"CPF inválido. Confira os números digitados.";
@@ -565,6 +581,10 @@ HRESULT CSampleCredential::SetStringValue(DWORD dwFieldID, _In_ PCWSTR pwz)
                         previewText = preview.message.c_str();
                     }
                 }
+                else if (previewResult == LAB_AUTH_NETWORK_NOT_READY)
+                    previewText = L"A rede do computador ainda está iniciando. Aguarde alguns segundos.";
+                else if (previewResult == LAB_AUTH_API_UNREACHABLE)
+                    previewText = L"Não foi possível conectar ao servidor local.";
                 else if (previewResult == LAB_AUTH_SERVICE_UNAVAILABLE)
                     previewText = L"Serviço de autenticação indisponível.";
                 else if (previewResult == LAB_AUTH_NOT_CONFIGURED)
@@ -644,61 +664,82 @@ $authBlock = @'
     const bool univesp =
         !adminTarget && _dwComboIndex == 1;
 
-    wchar_t normalizedIdentifier[33] = {};
-    size_t identifierCount = 0;
-    bool invalidIdentifierChars = false;
-    size_t excessIdentifierDigits = 0;
-
-    if (univesp)
-    {
-        LabMatriculaExtractDigits(
-            _rgFieldStrings[SFI_EDIT_TEXT], normalizedIdentifier,
-            &identifierCount, &invalidIdentifierChars, &excessIdentifierDigits);
-
-        if (_fCpfInvalidChars || invalidIdentifierChars || excessIdentifierDigits > 0 ||
-            identifierCount < 3 || identifierCount > 32)
-        {
-            SHStrDupW(L"Matrícula inválida.", ppwszOptionalStatusText);
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            return S_OK;
-        }
-    }
-    else
-    {
-        LabCpfExtractDigits(
-            _rgFieldStrings[SFI_EDIT_TEXT], normalizedIdentifier,
-            &identifierCount, &invalidIdentifierChars, &excessIdentifierDigits);
-
-        if (_fCpfInvalidChars || invalidIdentifierChars || excessIdentifierDigits > 0 ||
-            identifierCount != 11 || !LabCpfCheckDigitsOk(normalizedIdentifier))
-        {
-            SHStrDupW(L"CPF inválido. Confira os números digitados.", ppwszOptionalStatusText);
-            *pcpsiOptionalStatusIcon = CPSI_ERROR;
-            return S_OK;
-        }
-    }
-
     LAB_AUTH_RESPONSE authResponse;
-    LAB_AUTH_RESULT authResult =
-        LabAuthorizeIdentity(
-            normalizedIdentifier, univesp, adminTarget, &authResponse);
+    LAB_EMERGENCY_RESULT emergencyResult =
+        LabTryEmergencyAccess(
+            _rgFieldStrings[SFI_EDIT_TEXT], adminTarget, univesp, &authResponse);
 
-    if (authResult != LAB_AUTH_OK || !authResponse.authorized)
+    if (emergencyResult == LAB_EMERGENCY_REJECTED)
     {
-        PCWSTR statusText = univesp ? L"Matrícula não autorizada." : L"CPF não autorizado.";
-
-        if (!authResponse.message.empty())
-            statusText = authResponse.message.c_str();
-        else if (authResult == LAB_AUTH_SERVICE_UNAVAILABLE)
-            statusText = L"Serviço de autenticação indisponível.";
-        else if (authResult == LAB_AUTH_NOT_CONFIGURED)
-            statusText = L"API de autenticação não configurada.";
-        else if (authResult == LAB_AUTH_CLIENT_UNAUTHORIZED)
-            statusText = L"Este computador não foi autorizado.";
-
+        PCWSTR statusText = authResponse.message.empty()
+            ? L"Acesso de contingência recusado."
+            : authResponse.message.c_str();
         SHStrDupW(statusText, ppwszOptionalStatusText);
         *pcpsiOptionalStatusIcon = CPSI_ERROR;
         return S_OK;
+    }
+
+    if (emergencyResult != LAB_EMERGENCY_AUTHORIZED)
+    {
+        wchar_t normalizedIdentifier[33] = {};
+        size_t identifierCount = 0;
+        bool invalidIdentifierChars = false;
+        size_t excessIdentifierDigits = 0;
+
+        if (univesp)
+        {
+            LabMatriculaExtractDigits(
+                _rgFieldStrings[SFI_EDIT_TEXT], normalizedIdentifier,
+                &identifierCount, &invalidIdentifierChars, &excessIdentifierDigits);
+
+            if (_fCpfInvalidChars || invalidIdentifierChars || excessIdentifierDigits > 0 ||
+                identifierCount < 3 || identifierCount > 32)
+            {
+                SHStrDupW(L"Matrícula inválida.", ppwszOptionalStatusText);
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                return S_OK;
+            }
+        }
+        else
+        {
+            LabCpfExtractDigits(
+                _rgFieldStrings[SFI_EDIT_TEXT], normalizedIdentifier,
+                &identifierCount, &invalidIdentifierChars, &excessIdentifierDigits);
+
+            if (_fCpfInvalidChars || invalidIdentifierChars || excessIdentifierDigits > 0 ||
+                identifierCount != 11 || !LabCpfCheckDigitsOk(normalizedIdentifier))
+            {
+                SHStrDupW(L"CPF inválido. Confira os números digitados.", ppwszOptionalStatusText);
+                *pcpsiOptionalStatusIcon = CPSI_ERROR;
+                return S_OK;
+            }
+        }
+
+        LAB_AUTH_RESULT authResult =
+            LabAuthorizeIdentity(
+                normalizedIdentifier, univesp, adminTarget, &authResponse);
+
+        if (authResult != LAB_AUTH_OK || !authResponse.authorized)
+        {
+            PCWSTR statusText = univesp ? L"Matrícula não autorizada." : L"CPF não autorizado.";
+
+            if (!authResponse.message.empty())
+                statusText = authResponse.message.c_str();
+            else if (authResult == LAB_AUTH_NETWORK_NOT_READY)
+                statusText = L"A rede do computador ainda está iniciando. Aguarde alguns segundos e tente novamente.";
+            else if (authResult == LAB_AUTH_API_UNREACHABLE)
+                statusText = L"Não foi possível conectar ao servidor local.";
+            else if (authResult == LAB_AUTH_SERVICE_UNAVAILABLE)
+                statusText = L"Serviço de autenticação indisponível.";
+            else if (authResult == LAB_AUTH_NOT_CONFIGURED)
+                statusText = L"API de autenticação não configurada.";
+            else if (authResult == LAB_AUTH_CLIENT_UNAUTHORIZED)
+                statusText = L"Este computador não foi autorizado.";
+
+            SHStrDupW(statusText, ppwszOptionalStatusText);
+            *pcpsiOptionalStatusIcon = CPSI_ERROR;
+            return S_OK;
+        }
     }
 
     PCWSTR expectedAccount = adminTarget ? L"AdminEGOV" : L"AlunoEGOV";
@@ -836,7 +877,9 @@ if (-not $institutionJsonTail.Contains($institutionJsonNeedle)) {
 $requiredSupportHeader = @(
     'LabMatriculaExtractDigits(',
     'LabPreviewIdentity(',
-    'LabAuthorizeIdentity('
+    'LabAuthorizeIdentity(',
+    'LabTryEmergencyAccess(',
+    'LabEmergencyCodeShapeOk('
 )
 
 foreach ($needle in $requiredSupportHeader) {
@@ -850,6 +893,9 @@ $requiredCredential = @(
     'LabCpfCheckDigitsOk(',
     'LabPreviewIdentity(',
     'LabAuthorizeIdentity(',
+    'LabTryEmergencyAccess(',
+    'LabEmergencyCodeShapeOk(',
+    'LAB_EMERGENCY_AUTHORIZED',
     'preview.reason == L"nao_cadastrado"',
     'LabReadLocalPassword(',
     'LabNotifyAgent(',
@@ -887,6 +933,18 @@ $cpfInputChecks = @(
     @{
         Name = "login usa identificacao generica"
         Pattern = 'LabAuthorizeIdentity\('
+    },
+    @{
+        Name = "contingencia e avaliada antes da validacao normal"
+        Pattern = 'LabTryEmergencyAccess\([\s\S]{0,300}LAB_EMERGENCY_REJECTED[\s\S]{0,500}LAB_EMERGENCY_AUTHORIZED'
+    },
+    @{
+        Name = "rede ainda iniciando possui mensagem propria"
+        Pattern = 'LAB_AUTH_NETWORK_NOT_READY'
+    },
+    @{
+        Name = "servidor local inacessivel possui mensagem propria"
+        Pattern = 'LAB_AUTH_API_UNREACHABLE'
     },
     @{
         Name = "eco mostra matricula"
@@ -938,6 +996,43 @@ foreach ($check in $cpfSupportChecks) {
     }
 }
 
+$emergencySupportChecks = @(
+    @{
+        Name = "codigo emergencial possui exatamente 12 digitos"
+        Pattern = 'kEmergencyCodeDigits\s*=\s*12'
+    },
+    @{
+        Name = "contingencia nunca autoriza administrador"
+        Pattern = 'adminTarget\s*\|\|[\s\S]{0,80}univesp\s*\|\|[\s\S]{0,160}!IsEmergencyCodeCandidate'
+    },
+    @{
+        Name = "segredo emergencial usa DPAPI"
+        Pattern = 'ReadProtectedString\(\s*L"EmergencySecret"'
+    },
+    @{
+        Name = "validade emergencial e obrigatoria"
+        Pattern = 'ReadRegQword\([\s\S]{0,100}L"EmergencyExpiresUnix"'
+    },
+    @{
+        Name = "API e consultada tres vezes antes da contingencia"
+        Pattern = 'attempt\s*<\s*kEmergencyApiAttempts[\s\S]{0,800}LabGetStatus\('
+    },
+    @{
+        Name = "resposta 5xx e classificada separadamente"
+        Pattern = 'statusCode\s*>=\s*500\s*&&\s*statusCode\s*<=\s*599'
+    },
+    @{
+        Name = "auditoria local nao registra codigo"
+        Pattern = 'action=offline_emergency'
+    }
+)
+
+foreach ($check in $emergencySupportChecks) {
+    if (-not [regex]::IsMatch($checkSupport, $check.Pattern)) {
+        throw "Validacao de contingencia falhou em LabSupport.cpp: $($check.Name)"
+    }
+}
+
 if (-not $checkCredential.Contains('SFI_FULLNAME_TEXT')) {
     throw "Campo visual da mascara CPF nao foi gerado."
 }
@@ -981,5 +1076,6 @@ if (-not $checkSupport.Contains('CryptUnprotectData')) {
 Write-Host ""
 Write-Host "e-GOV Login v11-homolog preparado." -ForegroundColor Green
 Write-Host "Tiles: Aluno e-GOV / Admin e-GOV" -ForegroundColor Green
-Write-Host "v11 fix5: Escola de Governo=CPF (padrao) / UNIVESP=matricula; ambos usam /auth/cpf" -ForegroundColor Green
+Write-Host "v11 fix6: Escola de Governo=CPF (padrao) / UNIVESP=matricula; ambos usam /auth/cpf" -ForegroundColor Green
 Write-Host "Senha: DPAPI LocalMachine (nao embutida na DLL)" -ForegroundColor Green
+Write-Host "Contingencia: codigo local de 12 digitos, somente Aluno/Escola de Governo e API indisponivel" -ForegroundColor Green

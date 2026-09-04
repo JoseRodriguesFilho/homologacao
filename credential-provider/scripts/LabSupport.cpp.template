@@ -1,14 +1,18 @@
-﻿#include <windows.h>
+﻿#include <winsock2.h>
+#include <windows.h>
+#include <iphlpapi.h>
 #include <winhttp.h>
 #include <wincrypt.h>
 #include <string>
 #include <vector>
 #include <cctype>
 #include <cwctype>
+#include <cstdio>
 
 #include "LabSupport.h"
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "advapi32.lib")
 
@@ -17,6 +21,9 @@ namespace
     constexpr wchar_t kRegPath[] = L"SOFTWARE\\e-GOV\\LabCPFProvider";
     constexpr wchar_t kPipePath[] = L"\\\\.\\pipe\\eGOVLabCPFAgent";
     constexpr size_t kMaxResponse = 32 * 1024;
+    constexpr size_t kEmergencyCodeDigits = 12;
+    constexpr int kEmergencyApiAttempts = 3;
+    constexpr DWORD kEmergencyRetryDelayMs = 700;
 
     class HttpHandle
     {
@@ -138,6 +145,40 @@ namespace
         return data;
     }
 
+    bool ReadRegQword(PCWSTR valueName, ULONGLONG& value)
+    {
+        value = 0;
+        HKEY key = nullptr;
+
+        LONG status = RegOpenKeyExW(
+            HKEY_LOCAL_MACHINE,
+            kRegPath,
+            0,
+            KEY_QUERY_VALUE | KEY_WOW64_64KEY,
+            &key);
+
+        if (status != ERROR_SUCCESS)
+        {
+            return false;
+        }
+
+        DWORD type = 0;
+        DWORD cb = sizeof(value);
+
+        status = RegQueryValueExW(
+            key,
+            valueName,
+            nullptr,
+            &type,
+            reinterpret_cast<LPBYTE>(&value),
+            &cb);
+
+        RegCloseKey(key);
+        return status == ERROR_SUCCESS &&
+               type == REG_QWORD &&
+               cb == sizeof(value);
+    }
+
     bool ReadRegBinary(
         PCWSTR valueName,
         std::vector<BYTE>& data)
@@ -195,6 +236,156 @@ namespace
 
         data.resize(cb);
         return true;
+    }
+
+    bool ReadProtectedString(
+        PCWSTR valueName,
+        std::wstring& value)
+    {
+        value.clear();
+        std::vector<BYTE> encrypted;
+
+        if (!ReadRegBinary(valueName, encrypted))
+        {
+            return false;
+        }
+
+        DATA_BLOB input = {};
+        input.pbData = encrypted.data();
+        input.cbData = static_cast<DWORD>(encrypted.size());
+        DATA_BLOB output = {};
+
+        if (!CryptUnprotectData(
+                &input,
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                CRYPTPROTECT_UI_FORBIDDEN,
+                &output))
+        {
+            SecureZeroMemory(encrypted.data(), encrypted.size());
+            return false;
+        }
+
+        bool ok = false;
+
+        if (output.pbData != nullptr &&
+            output.cbData >= sizeof(wchar_t))
+        {
+            size_t chars = output.cbData / sizeof(wchar_t);
+            const wchar_t* raw =
+                reinterpret_cast<const wchar_t*>(output.pbData);
+
+            while (chars > 0 && raw[chars - 1] == L'\0')
+            {
+                --chars;
+            }
+
+            value.assign(raw, chars);
+            ok = !value.empty();
+            SecureZeroMemory(output.pbData, output.cbData);
+        }
+
+        if (output.pbData != nullptr)
+        {
+            LocalFree(output.pbData);
+        }
+
+        SecureZeroMemory(encrypted.data(), encrypted.size());
+        return ok;
+    }
+
+    bool HasUsableIpv4()
+    {
+        ULONG size = 16 * 1024;
+        std::vector<BYTE> buffer(size);
+        auto* addresses =
+            reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+
+        ULONG result = GetAdaptersAddresses(
+            AF_INET,
+            GAA_FLAG_SKIP_ANYCAST |
+                GAA_FLAG_SKIP_MULTICAST |
+                GAA_FLAG_SKIP_DNS_SERVER,
+            nullptr,
+            addresses,
+            &size);
+
+        if (result == ERROR_BUFFER_OVERFLOW)
+        {
+            buffer.resize(size);
+            addresses =
+                reinterpret_cast<PIP_ADAPTER_ADDRESSES>(buffer.data());
+            result = GetAdaptersAddresses(
+                AF_INET,
+                GAA_FLAG_SKIP_ANYCAST |
+                    GAA_FLAG_SKIP_MULTICAST |
+                    GAA_FLAG_SKIP_DNS_SERVER,
+                nullptr,
+                addresses,
+                &size);
+        }
+
+        if (result != NO_ERROR)
+        {
+            return false;
+        }
+
+        for (auto* adapter = addresses;
+             adapter != nullptr;
+             adapter = adapter->Next)
+        {
+            if (adapter->OperStatus != IfOperStatusUp ||
+                adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK ||
+                adapter->IfType == IF_TYPE_TUNNEL)
+            {
+                continue;
+            }
+
+            for (auto* unicast = adapter->FirstUnicastAddress;
+                 unicast != nullptr;
+                 unicast = unicast->Next)
+            {
+                if (unicast->Address.lpSockaddr == nullptr ||
+                    unicast->Address.lpSockaddr->sa_family != AF_INET)
+                {
+                    continue;
+                }
+
+                const auto* ipv4 =
+                    reinterpret_cast<const sockaddr_in*>(
+                        unicast->Address.lpSockaddr);
+                const auto* octets =
+                    reinterpret_cast<const BYTE*>(&ipv4->sin_addr);
+
+                if (octets[0] != 0 &&
+                    octets[0] != 127 &&
+                    !(octets[0] == 169 && octets[1] == 254))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    LAB_AUTH_RESULT ClassifyWinHttpFailure(DWORD error)
+    {
+        switch (error)
+        {
+        case ERROR_WINHTTP_TIMEOUT:
+        case ERROR_WINHTTP_NAME_NOT_RESOLVED:
+        case ERROR_WINHTTP_CANNOT_CONNECT:
+        case ERROR_WINHTTP_CONNECTION_ERROR:
+            return LAB_AUTH_API_UNREACHABLE;
+
+        default:
+            // Falha de certificado, parametro, memoria ou outra condicao
+            // interna nao prova que a API esteja fora. Falha fechada.
+            return LAB_AUTH_DENIED;
+        }
     }
 
     std::string WideToUtf8(const std::wstring& input)
@@ -316,6 +507,161 @@ namespace
         }
 
         return std::wstring(buffer, size);
+    }
+
+    ULONGLONG UnixTimeNow()
+    {
+        FILETIME fileTime = {};
+        GetSystemTimeAsFileTime(&fileTime);
+
+        ULARGE_INTEGER ticks = {};
+        ticks.LowPart = fileTime.dwLowDateTime;
+        ticks.HighPart = fileTime.dwHighDateTime;
+
+        constexpr ULONGLONG kUnixEpochTicks = 116444736000000000ULL;
+        constexpr ULONGLONG kTicksPerSecond = 10000000ULL;
+
+        if (ticks.QuadPart <= kUnixEpochTicks)
+        {
+            return 0;
+        }
+
+        return (ticks.QuadPart - kUnixEpochTicks) / kTicksPerSecond;
+    }
+
+    void SecureClear(std::wstring& value)
+    {
+        if (!value.empty())
+        {
+            SecureZeroMemory(
+                &value[0],
+                value.size() * sizeof(wchar_t));
+            value.clear();
+        }
+    }
+
+    bool IsEmergencyCodeCandidate(PCWSTR input)
+    {
+        if (input == nullptr)
+        {
+            return false;
+        }
+
+        size_t count = 0;
+
+        for (PCWSTR p = input; *p != L'\0'; ++p)
+        {
+            if (*p < L'0' || *p > L'9')
+            {
+                return false;
+            }
+
+            ++count;
+
+            if (count > kEmergencyCodeDigits)
+            {
+                return false;
+            }
+        }
+
+        return count == kEmergencyCodeDigits;
+    }
+
+    bool FixedTimeCodeEquals(
+        PCWSTR input,
+        const std::wstring& expected)
+    {
+        if (!IsEmergencyCodeCandidate(input) ||
+            expected.size() != kEmergencyCodeDigits)
+        {
+            return false;
+        }
+
+        unsigned difference = 0;
+
+        for (size_t i = 0; i < kEmergencyCodeDigits; ++i)
+        {
+            difference |= static_cast<unsigned>(
+                input[i] ^ expected[i]);
+        }
+
+        return difference == 0;
+    }
+
+    void WriteEmergencyAudit()
+    {
+        wchar_t programData[MAX_PATH] = {};
+
+        if (ExpandEnvironmentStringsW(
+                L"%ProgramData%",
+                programData,
+                ARRAYSIZE(programData)) == 0)
+        {
+            return;
+        }
+
+        std::wstring vendorDir =
+            std::wstring(programData) + L"\\e-GOV";
+        std::wstring stateDir =
+            vendorDir + L"\\LabCPF";
+
+        CreateDirectoryW(vendorDir.c_str(), nullptr);
+        CreateDirectoryW(stateDir.c_str(), nullptr);
+
+        std::wstring logPath =
+            stateDir + L"\\offline-access.log";
+        HANDLE file = CreateFileW(
+            logPath.c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            return;
+        }
+
+        SYSTEMTIME utc = {};
+        GetSystemTime(&utc);
+        wchar_t stamp[40] = {};
+        swprintf_s(
+            stamp,
+            L"%04u-%02u-%02uT%02u:%02u:%02uZ",
+            utc.wYear,
+            utc.wMonth,
+            utc.wDay,
+            utc.wHour,
+            utc.wMinute,
+            utc.wSecond);
+
+        std::wstring line =
+            std::wstring(stamp) +
+            L" computer=" + ComputerName() +
+            L" action=offline_emergency\r\n";
+        std::string utf8 = WideToUtf8(line);
+        DWORD written = 0;
+
+        if (!utf8.empty())
+        {
+            WriteFile(
+                file,
+                utf8.data(),
+                static_cast<DWORD>(utf8.size()),
+                &written,
+                nullptr);
+        }
+
+        CloseHandle(file);
+    }
+
+    bool IsEmergencyEligibleFailure(LAB_AUTH_RESULT result)
+    {
+        return result == LAB_AUTH_NETWORK_NOT_READY ||
+               result == LAB_AUTH_API_UNREACHABLE ||
+               result == LAB_AUTH_SERVICE_UNAVAILABLE;
     }
 
     bool JsonBool(
@@ -536,6 +882,10 @@ namespace
 
         response->reason = JsonString(json, "reason");
         response->message = JsonString(json, "message");
+        if (response->message.empty())
+        {
+            response->message = JsonString(json, "detail");
+        }
         response->name = JsonString(json, "name");
         response->role = JsonString(json, "role");
         response->course = JsonString(json, "course");
@@ -572,6 +922,11 @@ namespace
             !ReadRegString(L"ApiToken", token))
         {
             return LAB_AUTH_NOT_CONFIGURED;
+        }
+
+        if (!HasUsableIpv4())
+        {
+            return LAB_AUTH_NETWORK_NOT_READY;
         }
 
         while (!baseUrl.empty() &&
@@ -645,7 +1000,7 @@ namespace
 
         if (!session.valid())
         {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
+            return ClassifyWinHttpFailure(GetLastError());
         }
 
         WinHttpSetTimeouts(
@@ -664,7 +1019,7 @@ namespace
 
         if (!connection.valid())
         {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
+            return ClassifyWinHttpFailure(GetLastError());
         }
 
         DWORD flags = 0;
@@ -686,7 +1041,7 @@ namespace
 
         if (!request.valid())
         {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
+            return ClassifyWinHttpFailure(GetLastError());
         }
 
         std::string cpfUtf8 =
@@ -738,12 +1093,14 @@ namespace
             static_cast<DWORD>(body.size()),
             0);
 
-        if (!sent ||
-            !WinHttpReceiveResponse(
-                request,
-                nullptr))
+        if (!sent)
         {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
+            return ClassifyWinHttpFailure(GetLastError());
+        }
+
+        if (!WinHttpReceiveResponse(request, nullptr))
+        {
+            return ClassifyWinHttpFailure(GetLastError());
         }
 
         DWORD statusCode = 0;
@@ -758,18 +1115,7 @@ namespace
                 &statusSize,
                 WINHTTP_NO_HEADER_INDEX))
         {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
-        }
-
-        if (statusCode == 401 ||
-            statusCode == 403)
-        {
-            return LAB_AUTH_CLIENT_UNAUTHORIZED;
-        }
-
-        if (statusCode != 200)
-        {
-            return LAB_AUTH_SERVICE_UNAVAILABLE;
+            return LAB_AUTH_DENIED;
         }
 
         std::string responseBody;
@@ -782,7 +1128,7 @@ namespace
                     request,
                     &available))
             {
-                return LAB_AUTH_SERVICE_UNAVAILABLE;
+                return LAB_AUTH_DENIED;
             }
 
             if (available == 0)
@@ -793,7 +1139,7 @@ namespace
             if (responseBody.size() + available >
                 kMaxResponse)
             {
-                return LAB_AUTH_SERVICE_UNAVAILABLE;
+                return LAB_AUTH_DENIED;
             }
 
             size_t oldSize =
@@ -810,7 +1156,7 @@ namespace
                     available,
                     &read))
             {
-                return LAB_AUTH_SERVICE_UNAVAILABLE;
+                return LAB_AUTH_DENIED;
             }
 
             responseBody.resize(
@@ -820,6 +1166,25 @@ namespace
         ParseResponse(
             responseBody,
             response);
+
+        // Le o JSON tambem nas respostas de erro para preservar a mensagem
+        // especifica devolvida pela API. A classificacao continua fechada:
+        // somente 5xx representa indisponibilidade elegivel a contingencia.
+        if (statusCode == 401 ||
+            statusCode == 403)
+        {
+            return LAB_AUTH_CLIENT_UNAUTHORIZED;
+        }
+
+        if (statusCode >= 500 && statusCode <= 599)
+        {
+            return LAB_AUTH_SERVICE_UNAVAILABLE;
+        }
+
+        if (statusCode != 200)
+        {
+            return LAB_AUTH_DENIED;
+        }
 
         return LAB_AUTH_OK;
     }
@@ -1067,77 +1432,148 @@ LAB_AUTH_RESULT LabAuthorizeIdentity(
     return result;
 }
 
+bool LabEmergencyCodeShapeOk(PCWSTR input)
+{
+    return IsEmergencyCodeCandidate(input);
+}
+
+LAB_EMERGENCY_RESULT LabTryEmergencyAccess(
+    PCWSTR input,
+    bool adminTarget,
+    bool univesp,
+    LAB_AUTH_RESPONSE* response)
+{
+    if (response == nullptr)
+    {
+        return LAB_EMERGENCY_NOT_APPLICABLE;
+    }
+
+    *response = LAB_AUTH_RESPONSE{};
+
+    // A contingencia pertence exclusivamente ao perfil AlunoEGOV. Um valor
+    // comum (CPF/matricula) continua seguindo sempre a autenticacao da API.
+    if (adminTarget ||
+        univesp ||
+        !IsEmergencyCodeCandidate(input) ||
+        ReadRegDword(L"EmergencyEnabled", 0) != 1)
+    {
+        return LAB_EMERGENCY_NOT_APPLICABLE;
+    }
+
+    std::wstring expectedCode;
+
+    if (!ReadProtectedString(
+            L"EmergencySecret",
+            expectedCode))
+    {
+        return LAB_EMERGENCY_NOT_APPLICABLE;
+    }
+
+    const bool codeMatches =
+        FixedTimeCodeEquals(input, expectedCode);
+    SecureClear(expectedCode);
+
+    // Nao revela na tela se um codigo de 12 digitos quase correspondeu ao
+    // segredo. Se nao for o codigo configurado, ele segue como entrada normal.
+    if (!codeMatches)
+    {
+        return LAB_EMERGENCY_NOT_APPLICABLE;
+    }
+
+    ULONGLONG expiresUnix = 0;
+
+    if (!ReadRegQword(
+            L"EmergencyExpiresUnix",
+            expiresUnix) ||
+        expiresUnix == 0 ||
+        UnixTimeNow() >= expiresUnix)
+    {
+        response->message =
+            L"Codigo de contingencia expirado. Procure a administracao.";
+        return LAB_EMERGENCY_REJECTED;
+    }
+
+    LAB_AUTH_RESULT availability =
+        LAB_AUTH_SERVICE_UNAVAILABLE;
+
+    // O codigo nao ignora uma resposta da API. Ele so e liberado depois de
+    // tres falhas de infraestrutura consecutivas, evitando um falso offline
+    // enquanto a rede local ainda termina de subir.
+    for (int attempt = 0;
+         attempt < kEmergencyApiAttempts;
+         ++attempt)
+    {
+        LAB_AUTH_RESPONSE statusResponse;
+        availability = LabGetStatus(&statusResponse);
+
+        if (!IsEmergencyEligibleFailure(availability))
+        {
+            if (availability == LAB_AUTH_CLIENT_UNAUTHORIZED)
+            {
+                response->message =
+                    L"Este computador nao foi autorizado.";
+            }
+            else if (availability == LAB_AUTH_NOT_CONFIGURED)
+            {
+                response->message =
+                    L"API de autenticacao nao configurada.";
+            }
+            else
+            {
+                response->message =
+                    L"O codigo de contingencia so pode ser usado quando o servidor local estiver indisponivel.";
+            }
+
+            return LAB_EMERGENCY_REJECTED;
+        }
+
+        if (attempt + 1 < kEmergencyApiAttempts)
+        {
+            Sleep(kEmergencyRetryDelayMs);
+        }
+    }
+
+    std::wstring displayName;
+    std::wstring course;
+
+    if (!ReadRegString(
+            L"EmergencyDisplayName",
+            displayName))
+    {
+        displayName = L"Aluno - Contingencia";
+    }
+
+    if (!ReadRegString(
+            L"EmergencyCourse",
+            course))
+    {
+        course = L"Aula em modo de contingencia";
+    }
+
+    response->authorized = true;
+    response->recognized = true;
+    response->allowed = true;
+    response->reason = L"offline_emergency";
+    response->message = L"Acesso emergencial autorizado.";
+    response->name = displayName;
+    response->role = L"aluno";
+    response->course = course;
+    response->action = L"offline_emergency";
+    response->windowsAccount = L"AlunoEGOV";
+
+    WriteEmergencyAudit();
+    return LAB_EMERGENCY_AUTHORIZED;
+}
+
 bool LabReadLocalPassword(
     bool adminTarget,
     std::wstring& password)
 {
-    password.clear();
-
-    std::vector<BYTE> encrypted;
-
     PCWSTR valueName =
         adminTarget
             ? L"AdminSecret"
             : L"StudentSecret";
-
-    if (!ReadRegBinary(
-            valueName,
-            encrypted))
-    {
-        return false;
-    }
-
-    DATA_BLOB input = {};
-    input.pbData = encrypted.data();
-    input.cbData =
-        static_cast<DWORD>(encrypted.size());
-
-    DATA_BLOB output = {};
-
-    if (!CryptUnprotectData(
-            &input,
-            nullptr,
-            nullptr,
-            nullptr,
-            nullptr,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &output))
-    {
-        return false;
-    }
-
-    bool ok = false;
-
-    if (output.pbData != nullptr &&
-        output.cbData >= sizeof(wchar_t))
-    {
-        size_t chars =
-            output.cbData / sizeof(wchar_t);
-
-        const wchar_t* raw =
-            reinterpret_cast<const wchar_t*>(
-                output.pbData);
-
-        while (chars > 0 &&
-               raw[chars - 1] == L'\0')
-        {
-            --chars;
-        }
-
-        password.assign(raw, chars);
-        ok = !password.empty();
-
-        SecureZeroMemory(
-            output.pbData,
-            output.cbData);
-    }
-
-    LocalFree(output.pbData);
-    SecureZeroMemory(
-        encrypted.data(),
-        encrypted.size());
-
-    return ok;
+    return ReadProtectedString(valueName, password);
 }
 
 void LabNotifyAgent(
